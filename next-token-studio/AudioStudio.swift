@@ -1,6 +1,8 @@
 import AppKit
 import AVFoundation
 import Observation
+import CoreAudio
+import AudioToolbox
 
 struct Recording: Identifiable, Hashable {
     var id: URL { url }
@@ -10,7 +12,7 @@ struct Recording: Identifiable, Hashable {
 }
 
 @MainActor @Observable
-final class AudioStudio: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegate {
+final class AudioStudio: NSObject, AVAudioPlayerDelegate {
     var recordings: [Recording] = []
     var selectedID: URL?
     var isRecording = false
@@ -20,7 +22,18 @@ final class AudioStudio: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegat
     var level: Double = 0
     var playingID: URL?
     var errorMessage: String?
-    private var recorder: AVAudioRecorder?
+    var inputDevices: [InputDevice] = []
+    var selectedInputID: AudioDeviceID = 0
+    var waveform: [Float] = []
+    var isPlaying = false
+    var playbackTime: TimeInterval = 0
+    var playbackDuration: TimeInterval = 0
+    private var engine: AVAudioEngine?
+    private var writer: CaptureWriter?
+    private var recordingURL: URL?
+    private var playbackTimer: Timer?
+    private var deviceTimer: Timer?
+    private var configurationObserver: NSObjectProtocol?
     private var player: AVAudioPlayer?
     private var timer: Timer?
 
@@ -42,6 +55,22 @@ final class AudioStudio: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegat
     override init() {
         super.init()
         reload()
+        refreshInputs()
+        deviceTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refreshInputs() }
+        }
+    }
+
+    func refreshInputs() {
+        inputDevices = AudioInputs.available()
+        if !inputDevices.contains(where: { $0.id == selectedInputID }) {
+            if isRecording {
+                stopRecording()
+                errorMessage = "输入设备已断开，已有录音已保存。请选择输入设备后重新录音。"
+            }
+            let defaultID = AudioInputs.defaultID()
+            selectedInputID = inputDevices.first(where: { $0.id == defaultID })?.id ?? inputDevices.first?.id ?? 0
+        }
     }
 
     func reload() {
@@ -68,84 +97,96 @@ final class AudioStudio: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegat
             formatter.dateFormat = "yyyy-MM-dd HH-mm-ss"
             let name = "录音 \(formatter.string(from: Date()))-\(UUID().uuidString.prefix(4))"
             let url = try directory.appendingPathComponent(name).appendingPathExtension("m4a")
-            let recording = try AVAudioRecorder(url: url, settings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 48_000,
-                AVNumberOfChannelsKey: 1,
-                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-            ])
-            recording.delegate = self
-            recording.isMeteringEnabled = true
-            guard recording.prepareToRecord(), recording.record() else {
+            refreshInputs()
+            guard selectedInputID != 0 else { throw NSError(domain: "AudioStudio", code: 1, userInfo: [NSLocalizedDescriptionKey: "没有可用的音频输入设备。"] ) }
+            let engine = AVAudioEngine()
+            let input = engine.inputNode
+            guard let unit = input.audioUnit else { throw NSError(domain: "AudioStudio", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法访问音频输入。"]) }
+            var deviceID = selectedInputID
+            let result = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &deviceID, UInt32(MemoryLayout<AudioDeviceID>.size))
+            guard result == noErr else { throw NSError(domain: "AudioStudio", code: Int(result), userInfo: [NSLocalizedDescriptionKey: "无法使用所选输入设备。"] ) }
+            let format = input.outputFormat(forBus: 0)
+            guard format.sampleRate > 0, format.channelCount > 0 else { throw NSError(domain: "AudioStudio", code: 1, userInfo: [NSLocalizedDescriptionKey: "输入设备没有可用的音频通道。"] ) }
+            let writer = try CaptureWriter(url: url, inputFormat: format)
+            input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in writer.append(buffer) }
+            do { try engine.start() } catch {
+                input.removeTap(onBus: 0)
+                writer.close()
                 try? FileManager.default.removeItem(at: url)
-                throw NSError(domain: "AudioStudio", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法启动麦克风，请检查输入设备。"])
+                throw error
             }
-            recorder = recording
+            self.engine = engine
+            self.writer = writer
+            recordingURL = url
             isRecording = true
             isPaused = false
             elapsed = 0
-            timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            waveform = []
+            configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.isRecording, self.engine?.isRunning == false else { return }
+                    self.stopRecording()
+                    self.errorMessage = "音频设备配置发生变化，已有录音已保存。请重新开始录音。"
+                }
+            }
+            timer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.updateMeter() }
             }
         } catch { errorMessage = "录音失败：\(error.localizedDescription)" }
     }
 
     private func updateMeter() {
-        guard let recorder, isRecording, !isPaused else { return }
-        elapsed = recorder.currentTime
-        recorder.updateMeters()
-        level = max(0, min(1, pow(10, Double(recorder.averagePower(forChannel: 0)) / 20)))
+        guard let writer, isRecording else { return }
+        let snapshot = writer.snapshot()
+        elapsed = snapshot.0
+        waveform = snapshot.1
+        level = isPaused ? 0 : Double(waveform.last ?? 0)
+        if let failure = snapshot.2 {
+            stopRecording()
+            errorMessage = "录音出现错误：\(failure)"
+        }
     }
 
     func togglePause() {
-        guard let recorder, isRecording else { return }
-        if isPaused {
-            guard recorder.record() else { errorMessage = "无法继续录音，请停止并保存。"; return }
-        } else { recorder.pause() }
+        guard let writer, isRecording else { return }
         isPaused.toggle()
+        writer.setPaused(isPaused)
         level = 0
     }
 
     func stopRecording() {
         guard isRecording else { return }
-        recorder?.stop()
-        finishRecording()
-    }
-
-    private func finishRecording() {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+        configurationObserver = nil
+        engine?.stop()
+        engine?.inputNode.removeTap(onBus: 0)
+        if let snapshot = writer?.snapshot() { elapsed = snapshot.0; waveform = snapshot.1 }
+        writer?.close()
+        writer = nil
+        engine = nil
         timer?.invalidate()
         timer = nil
         isRecording = false
         isPaused = false
         level = 0
-    }
-
-    nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
-        let url = recorder.url
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            finishRecording()
-            self.recorder = nil
-            if flag {
-                reload()
-                selectedID = url
-            } else { errorMessage = "录音未能完整保存，请检查可用磁盘空间。" }
-        }
-    }
-
-    nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: (any Error)?) {
-        let message = error?.localizedDescription ?? "编码失败"
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.recorder?.stop()
-            finishRecording()
-            errorMessage = "录音出现错误：\(message)"
-        }
+        reload()
+        selectedID = recordingURL
+        recordingURL = nil
     }
 
     func togglePlayback(_ recording: Recording) {
         guard !isBusy else { return }
-        if playingID == recording.id { stopPlayback(); return }
+        if playingID == recording.id, let player {
+            if isPlaying {
+                player.pause()
+                isPlaying = false
+            } else {
+                if player.currentTime >= player.duration { player.currentTime = 0 }
+                isPlaying = player.play()
+            }
+            playbackTime = player.currentTime
+            return
+        }
         stopPlayback()
         do {
             let audio = try AVAudioPlayer(contentsOf: recording.url)
@@ -153,12 +194,42 @@ final class AudioStudio: NSObject, AVAudioRecorderDelegate, AVAudioPlayerDelegat
             guard audio.play() else { throw NSError(domain: "AudioStudio", code: 2, userInfo: [NSLocalizedDescriptionKey: "无法播放此文件。"]) }
             player = audio
             playingID = recording.id
+            selectedID = recording.id
+            isPlaying = true
+            playbackDuration = audio.duration
+            playbackTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.isPlaying, let player = self.player else { return }
+                    self.playbackTime = player.currentTime
+                }
+            }
         } catch { errorMessage = "播放失败：\(error.localizedDescription)" }
     }
 
-    func stopPlayback() { player?.stop(); player = nil; playingID = nil }
+    func seek(to time: TimeInterval) {
+        guard let player else { return }
+        playbackTime = min(max(0, time), playbackDuration)
+        player.currentTime = playbackTime
+    }
+
+    func stopPlayback() {
+        playbackTimer?.invalidate()
+        playbackTimer = nil
+        player?.stop()
+        player = nil
+        playingID = nil
+        isPlaying = false
+        playbackTime = 0
+        playbackDuration = 0
+    }
+
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        Task { @MainActor [weak self] in self?.stopPlayback() }
+        Task { @MainActor [weak self] in
+            guard let self, self.player === player else { return }
+            self.isPlaying = false
+            self.playbackTime = self.playbackDuration
+            if !flag { self.errorMessage = "播放中断，请重新播放。" }
+        }
     }
 
     func export(_ recording: Recording) {
