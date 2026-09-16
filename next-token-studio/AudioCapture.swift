@@ -5,6 +5,9 @@ import AudioToolbox
 struct InputDevice: Identifiable, Equatable {
     let id: AudioDeviceID
     let name: String
+    let uid: String
+    let channelNames: [String]
+    var channelCount: Int { channelNames.count }
 }
 
 enum AudioInputs {
@@ -15,16 +18,49 @@ enum AudioInputs {
         var ids = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
         guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &ids) == noErr else { return [] }
         return ids.compactMap { id in
-            var streams = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams, mScope: kAudioDevicePropertyScopeInput, mElement: kAudioObjectPropertyElementMain)
-            var streamSize: UInt32 = 0
-            guard AudioObjectGetPropertyDataSize(id, &streams, 0, nil, &streamSize) == noErr, streamSize > 0 else { return nil }
-            var name: Unmanaged<CFString>?
-            var nameSize = UInt32(MemoryLayout<CFString>.size)
-            var property = AudioObjectPropertyAddress(mSelector: kAudioObjectPropertyName, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-            guard AudioObjectGetPropertyData(id, &property, 0, nil, &nameSize, &name) == noErr else { return nil }
-            guard let name else { return nil }
-            return InputDevice(id: id, name: name.takeUnretainedValue() as String)
+            let count = channelCount(id)
+            guard count > 0, let name = string(id, selector: kAudioObjectPropertyName) else { return nil }
+            let uid = string(id, selector: kAudioDevicePropertyDeviceUID) ?? String(id)
+            return InputDevice(id: id, name: name, uid: uid, channelNames: channelNames(id, count: count))
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    static func channelCount(_ id: AudioDeviceID) -> Int {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration, mScope: kAudioDevicePropertyScopeInput, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &address, 0, nil, &size) == noErr, size > 0 else { return 0 }
+        let storage = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { storage.deallocate() }
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, storage) == noErr else { return 0 }
+        return UnsafeMutableAudioBufferListPointer(storage.assumingMemoryBound(to: AudioBufferList.self)).reduce(0) { $0 + Int($1.mNumberChannels) }
+    }
+
+    static func string(_ id: AudioObjectID, selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal, element: AudioObjectPropertyElement = kAudioObjectPropertyElementMain) -> String? {
+        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: element)
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<CFString>.size)
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &value) == noErr else { return nil }
+        guard let text = value?.takeRetainedValue() as String?, !text.isEmpty else { return nil }
+        return text
+    }
+
+    private static func channelNames(_ id: AudioDeviceID, count: Int) -> [String] {
+        // Aggregate channels follow the active subdevices in stream order.
+        var address = AudioObjectPropertyAddress(mSelector: kAudioAggregateDevicePropertyActiveSubDeviceList, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        if AudioObjectHasProperty(id, &address), AudioObjectGetPropertyDataSize(id, &address, 0, nil, &size) == noErr, size > 0 {
+            var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+            if AudioObjectGetPropertyData(id, &address, 0, nil, &size, &devices) == noErr {
+                let names = devices.flatMap { device -> [String] in
+                    let name = string(device, selector: kAudioObjectPropertyName) ?? "输入"
+                    return (0..<channelCount(device)).map { "\(name) · \($0 + 1)" }
+                }
+                if names.count == count { return names }
+            }
+        }
+        return (1...count).map { channel in
+            string(id, selector: kAudioObjectPropertyElementName, scope: kAudioDevicePropertyScopeInput, element: UInt32(channel)) ?? "输入 \(channel)"
+        }
     }
 
     static func defaultID() -> AudioDeviceID {
@@ -36,65 +72,102 @@ enum AudioInputs {
     }
 }
 
-// The tap and UI share only this locked state. Audio buffers never cross to the main actor.
+nonisolated struct CaptureSnapshot {
+    let elapsed: TimeInterval
+    let waveforms: [[Float]]
+    let peaks: [Float]
+    let failure: String?
+    let lastBufferAt: Date?
+}
+
+// The tap and UI share only this locked state. Preserve every input channel without a downmix.
 nonisolated final class CaptureWriter: @unchecked Sendable {
     private let lock = NSLock()
     private var file: AVAudioFile?
-    private let converter: AVAudioConverter
     private let format: AVAudioFormat
     private var paused = false
     private var frames: Int64 = 0
-    private var peaks: [Float] = []
-    private var peak: Float = 0
+    private var histories: [[Float]]
+    private var peaks: [Float]
+    private var latestPeaks: [Float]
     private var binFrames = 0
+    private let binLength: Int
     private var failure: String?
+    private var lastBufferAt: Date?
 
     init(url: URL, inputFormat: AVAudioFormat) throws {
-        format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
-        guard let converter = AVAudioConverter(from: inputFormat, to: format) else {
+        guard inputFormat.commonFormat == .pcmFormatFloat32, !inputFormat.isInterleaved, inputFormat.channelCount > 0, inputFormat.sampleRate > 0 else {
             throw NSError(domain: "AudioStudio", code: 3, userInfo: [NSLocalizedDescriptionKey: "此输入设备的音频格式不受支持。"])
         }
-        self.converter = converter
-        file = try AVAudioFile(forWriting: url, settings: [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 1, AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue])
+        format = inputFormat
+        histories = Array(repeating: [], count: Int(format.channelCount))
+        peaks = Array(repeating: 0, count: Int(format.channelCount))
+        latestPeaks = peaks
+        binLength = max(1, Int(format.sampleRate * 0.04))
+        var settings = format.settings
+        settings[AVLinearPCMIsNonInterleaved] = false
+        file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
     }
 
     func append(_ input: AVAudioPCMBuffer) {
         lock.lock()
         defer { lock.unlock() }
-        guard !paused, failure == nil, let file else { return }
-        let capacity = AVAudioFrameCount(ceil(Double(input.frameLength) * 48_000 / input.format.sampleRate)) + 128
-        guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return }
-        var supplied = false
-        var error: NSError?
-        let status = converter.convert(to: output, error: &error) { _, state in
-            if supplied { state.pointee = .noDataNow; return nil }
-            supplied = true
-            state.pointee = .haveData
-            return input
+        guard failure == nil, let file else { return }
+        lastBufferAt = Date()
+        guard !paused, input.frameLength > 0 else { return }
+        guard input.format.channelCount == format.channelCount, input.format.sampleRate == format.sampleRate,
+              input.format.commonFormat == .pcmFormatFloat32, !input.format.isInterleaved, let samples = input.floatChannelData else {
+            failure = "输入通道或采样率已改变，请重新开始录音。"
+            return
         }
-        guard status != .error else { failure = error?.localizedDescription ?? "音频转换失败"; return }
-        guard output.frameLength > 0 else { return }
-        do { try file.write(from: output) } catch { failure = error.localizedDescription; return }
-        frames += Int64(output.frameLength)
-        if let samples = output.floatChannelData?[0] {
-            for index in 0..<Int(output.frameLength) {
-                peak = max(peak, abs(samples[index]))
-                binFrames += 1
-                if binFrames == 1920 { // One peak per 40 ms; retain eight seconds.
-                    peaks.append(min(1, peak))
-                    peak = 0
-                    binFrames = 0
-                }
+        do { try file.write(from: input) } catch { failure = error.localizedDescription; return }
+        frames += Int64(input.frameLength)
+        for index in 0..<Int(input.frameLength) {
+            for channel in peaks.indices {
+                peaks[channel] = max(peaks[channel], abs(samples[channel][index]))
             }
-            if peaks.count > 200 { peaks.removeFirst(peaks.count - 200) }
+            binFrames += 1
+            if binFrames >= binLength {
+                latestPeaks = peaks
+                for channel in peaks.indices {
+                    histories[channel].append(peaks[channel])
+                    if histories[channel].count > 200 { histories[channel].removeFirst(histories[channel].count - 200) }
+                    peaks[channel] = 0
+                }
+                binFrames = 0
+            }
         }
     }
 
     func setPaused(_ value: Bool) { lock.lock(); paused = value; lock.unlock() }
-    func snapshot() -> (TimeInterval, [Float], String?) {
+    func snapshot() -> CaptureSnapshot {
         lock.lock()
         defer { lock.unlock() }
-        return (Double(frames) / 48_000, peaks, failure)
+        return CaptureSnapshot(elapsed: Double(frames) / format.sampleRate, waveforms: histories, peaks: latestPeaks, failure: failure, lastBufferAt: lastBufferAt)
     }
     func close() { lock.lock(); file = nil; lock.unlock() }
+}
+
+nonisolated enum ChannelPreview {
+    // Audition one discrete channel through a mono file, without surround/LFE speaker routing.
+    static func render(source: URL, channel: Int, destination: URL) throws {
+        let input = try AVAudioFile(forReading: source)
+        guard channel >= 0, channel < Int(input.processingFormat.channelCount) else {
+            throw NSError(domain: "AudioStudio", code: 4, userInfo: [NSLocalizedDescriptionKey: "此录音不包含所选通道。"])
+        }
+        let format = AVAudioFormat(standardFormatWithSampleRate: input.processingFormat.sampleRate, channels: 1)!
+        let output = try AVAudioFile(forWriting: destination, settings: format.settings)
+        let sourceBuffer = AVAudioPCMBuffer(pcmFormat: input.processingFormat, frameCapacity: 8192)!
+        let mono = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8192)!
+        var remaining = input.length
+        while remaining > 0 {
+            try Task.checkCancellation()
+            try input.read(into: sourceBuffer, frameCount: AVAudioFrameCount(min(remaining, 8192)))
+            guard sourceBuffer.frameLength > 0 else { break }
+            remaining -= AVAudioFramePosition(sourceBuffer.frameLength)
+            mono.frameLength = sourceBuffer.frameLength
+            mono.floatChannelData![0].update(from: sourceBuffer.floatChannelData![channel], count: Int(mono.frameLength))
+            try output.write(from: mono)
+        }
+    }
 }

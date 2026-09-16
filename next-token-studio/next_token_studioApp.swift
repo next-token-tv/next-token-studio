@@ -7,9 +7,9 @@ struct NextTokenStudioApp: App {
     var body: some Scene {
         Window("Next Token Studio", id: "studio") {
             ContentView(studio: studio)
-                .frame(minWidth: 780, minHeight: 540)
+                .frame(minWidth: 780, minHeight: 680)
         }
-        .defaultSize(width: 1060, height: 720)
+        .defaultSize(width: 1060, height: 820)
         .commands {
             SidebarCommands()
             CommandMenu("录音") {

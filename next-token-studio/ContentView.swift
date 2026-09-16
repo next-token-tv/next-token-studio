@@ -47,26 +47,41 @@ struct ContentView: View {
     }
 
     private var recorderPanel: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 10) {
             Picker("输入音源", selection: $studio.selectedInputID) {
                 if studio.inputDevices.isEmpty { Text("没有可用的输入设备").tag(UInt32(0)) }
-                ForEach(studio.inputDevices) { device in Text(device.name).tag(device.id) }
+                ForEach(studio.inputDevices) { device in Text("\(device.name) · \(device.channelCount) 路输入").tag(device.id) }
             }
-            .frame(maxWidth: 420)
+            .frame(maxWidth: 560)
             .disabled(studio.isBusy)
             Label(studio.isRecording ? (studio.isPaused ? "录音已暂停" : "正在录音") : "准备录制", systemImage: "mic.fill")
                 .font(.headline).foregroundStyle(studio.isRecording ? .red : .secondary)
-            Text(studio.clock).font(.system(size: 54, weight: .light, design: .monospaced)).monospacedDigit()
-            VStack(spacing: 6) {
-                LiveWaveform(samples: studio.waveform, paused: studio.isPaused)
-                    .frame(height: 88)
-                    .accessibilityLabel("所选音源最近八秒的录音波形")
-                HStack {
-                    Text("−8 秒")
-                    Spacer()
-                    Text(studio.isPaused ? "已暂停" : "当前")
-                }.font(.caption2).foregroundStyle(.secondary)
-            }.frame(maxWidth: 620)
+            Text(studio.clock).font(.system(size: 32, weight: .light, design: .monospaced)).monospacedDigit()
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(Array(studio.displayedChannelNames.enumerated()), id: \.offset) { index, name in
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("CH \(index + 1) · \(name)").font(.caption).lineLimit(1)
+                                Text(channelLevel(index)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                            }.frame(width: 185, alignment: .leading)
+                            LiveWaveform(samples: studio.waveforms.indices.contains(index) ? studio.waveforms[index] : [], paused: studio.isPaused)
+                                .frame(height: 42)
+                                .accessibilityLabel("通道 \(index + 1)，\(name)，\(channelLevel(index))，最近八秒波形")
+                        }
+                    }
+                }
+            }
+            .frame(height: CGFloat(min(max(studio.displayedChannelNames.count, 1), 6) * 50))
+            HStack {
+                Text("最近 8 秒 · 显示范围 −60 至 0 dBFS")
+                Spacer()
+                Text(studio.isPaused ? "已暂停" : "当前")
+            }.font(.caption2).foregroundStyle(.secondary)
+            if let status = studio.signalStatus {
+                Label(status, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
             HStack(spacing: 14) {
                 if studio.isRecording {
                     Button { studio.togglePause() } label: {
@@ -81,9 +96,16 @@ struct ContentView: View {
                     }.buttonStyle(.borderedProminent).tint(.red).disabled(studio.isRequestingPermission || studio.inputDevices.isEmpty)
                 }
             }.controlSize(.large)
-            Text("AAC / 48 kHz · 录音保存在本机")
+            Text("CAF 无损 · 保留全部 \(studio.displayedChannelNames.count) 路输入 · 设备原始采样率")
                 .font(.caption).foregroundStyle(.secondary)
-        }.frame(maxWidth: .infinity).padding(32)
+        }.frame(maxWidth: .infinity).padding(20)
+    }
+
+    private func channelLevel(_ index: Int) -> String {
+        guard studio.channelPeaks.indices.contains(index) else { return "等待录音" }
+        let peak = studio.channelPeaks[index]
+        if peak < 0.00001 { return "无信号 · −∞ dBFS" }
+        return String(format: "%.1f dBFS%@", 20 * log10(peak), peak >= 1 ? " · 削波" : "")
     }
 
     private var playerPanel: some View {
@@ -99,13 +121,26 @@ struct ContentView: View {
                         .font(.title2).frame(width: 36, height: 36)
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(studio.isPreparingPlayback)
                 .clipShape(Circle())
                 .help(studio.isPlaying ? "暂停播放" : "继续播放")
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(studio.playingID?.deletingPathExtension().lastPathComponent ?? "录音")
-                        .font(.headline).lineLimit(1)
+                    HStack {
+                        Text(studio.playingID?.deletingPathExtension().lastPathComponent ?? "录音")
+                            .font(.headline).lineLimit(1)
+                        Spacer()
+                        if studio.isPreparingPlayback { ProgressView().controlSize(.small) }
+                        if studio.playbackChannelNames.count > 1 {
+                            Picker("试听", selection: Binding(get: { studio.playbackChannel }, set: { studio.selectPlaybackChannel($0) })) {
+                                ForEach(Array(studio.playbackChannelNames.enumerated()), id: \.offset) { index, name in
+                                    Text("CH \(index + 1) · \(name)").tag(index)
+                                }
+                            }.frame(maxWidth: 260).disabled(studio.isPreparingPlayback)
+                        }
+                    }
                     Slider(value: Binding(get: { studio.playbackTime }, set: { studio.seek(to: $0) }), in: 0...max(studio.playbackDuration, 0.01))
                         .accessibilityLabel("播放进度")
+                        .disabled(studio.isPreparingPlayback)
                     HStack {
                         Text(playbackClock(studio.playbackTime))
                         Spacer()
@@ -137,13 +172,17 @@ struct ContentView: View {
                             Image(systemName: "waveform").foregroundStyle(.red).font(.title2)
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(recording.name)
+                                if let metadata = recording.metadata {
+                                    Text("\(metadata.channelNames.count) 路 · \(metadata.inputName)")
+                                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                }
                                 Text(recording.createdAt, format: .dateTime.year().month().day().hour().minute())
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                             Button { studio.togglePlayback(recording) } label: {
                                 Image(systemName: studio.playingID == recording.id && studio.isPlaying ? "pause.fill" : "play.fill")
-                            }.help(studio.playingID == recording.id && studio.isPlaying ? "暂停播放" : "播放录音").disabled(studio.isBusy)
+                            }.help(studio.playingID == recording.id && studio.isPlaying ? "暂停播放" : "播放录音").disabled(studio.isBusy || studio.isPreparingPlayback)
                         }.padding(.vertical, 6).tag(recording.id)
                         .contextMenu {
                             Button("导出录音…") { studio.export(recording) }
@@ -171,7 +210,9 @@ private struct LiveWaveform: View {
             var bars = Path()
             for (index, amplitude) in samples.suffix(200).enumerated() {
                 let x = CGFloat(200 - min(samples.count, 200) + index) * step
-                let height = max(1, CGFloat(amplitude) * (size.height - 12))
+                let decibels = amplitude > 0 ? 20 * log10(amplitude) : -100
+                let displayLevel = max(0, min(1, (decibels + 60) / 60))
+                let height = max(1, CGFloat(displayLevel) * (size.height - 8))
                 bars.move(to: CGPoint(x: x, y: center - height / 2))
                 bars.addLine(to: CGPoint(x: x, y: center + height / 2))
             }

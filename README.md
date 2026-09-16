@@ -5,8 +5,8 @@
 ## 功能
 
 - 系统侧边栏、工具栏和「录音」菜单。
-- 可选麦克风输入、最近 8 秒实时波形、暂停、继续与停止保存；输入设备断开或配置改变时停止并保存。
-- AAC / 48 kHz 单声道 M4A 录音、本地资料库、回放和导出。播放器支持暂停、继续、时间显示和进度拖动。
+- 可选麦克风或聚集输入设备，显示实际通道数并记住所选设备。每路独立显示最近 8 秒波形、通道来源和 dBFS 峰值；支持暂停、继续与停止保存。输入设备断开或配置改变时停止并保存。
+- CAF 无损录音保留设备原始采样率和全部输入通道，通道名称保存在同名 JSON 旁文件中；兼容已有 M4A 录音。播放器支持逐路试听、暂停、继续、时间显示和进度拖动，导出保留原始音频文件。
 - 首次录音请求麦克风授权。录音保存在应用沙盒的 Application Support/NextTokenStudio/Recordings 中。
 
 ## 开发
@@ -23,7 +23,7 @@ xcodebuild -project next-token-studio.xcodeproj -scheme next-token-studio -confi
 
 ## 验证
 
-合成音频检查覆盖 44.1 / 48 kHz 双声道输入转换、波形幅度与历史长度、暂停继续，以及保存后的格式和时长：
+合成音频检查覆盖 44.1 / 48 kHz 下的 1、4、5 路输入，验证各路独立波形、静音通道、反相信号、暂停继续、保存后的逐样本一致性与时长，以及逐路试听文件：
 
 ```sh
 swiftc next-token-studio/AudioCapture.swift Tests/AudioCaptureChecks.swift -o /tmp/next-token-audio-checks
