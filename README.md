@@ -8,6 +8,7 @@
 - 可选麦克风或聚集输入设备，显示实际通道数并记住所选设备。每路独立显示最近 8 秒波形、通道来源和 dBFS 峰值；支持暂停、继续与停止保存。输入设备断开或配置改变时停止并保存。
 - CAF 无损录音保留设备原始采样率和全部输入通道，通道名称保存在同名 JSON 旁文件中；兼容已有 M4A 录音。回放自动混合全部通道，总峰值过高时统一衰减以防削波，原始录音保持不变。
 - 播放器支持播放、暂停、回到开头、进度拖动及点击任意轨道波形定位；空格键控制播放与暂停。导出保留原始多通道音频文件。
+- 支持工具栏删除、右键「移到废纸篓」和 ⌘⌫。音频与通道信息一起移到废纸篓，删除正在回放的录音会先停止播放；录音期间不可删除。
 - 首次录音请求麦克风授权。录音保存在应用沙盒的 Application Support/NextTokenStudio/Recordings 中。
 
 ## 开发
@@ -31,4 +32,6 @@ swiftc next-token-studio/AudioCapture.swift Tests/AudioCaptureChecks.swift -o /t
 /tmp/next-token-audio-checks
 swiftc next-token-studio/PlaybackRender.swift Tests/PlaybackRenderChecks.swift -o /tmp/next-token-playback-checks
 /tmp/next-token-playback-checks
+swiftc next-token-studio/RecordingTrash.swift Tests/RecordingTrashChecks.swift -o /tmp/next-token-trash-checks
+/tmp/next-token-trash-checks
 ```

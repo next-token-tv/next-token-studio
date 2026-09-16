@@ -343,6 +343,18 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
         }
     }
 
+    func deleteRecording(_ recording: Recording) {
+        guard !isBusy, recordings.contains(where: { $0.id == recording.id }) else { return }
+        if playingID == recording.id { stopPlayback() }
+        do {
+            try RecordingTrash.move(recording.url)
+            if selectedID == recording.id { selectedID = nil }
+            reload()
+        } catch {
+            errorMessage = "无法删除录音：\(error.localizedDescription)"
+        }
+    }
+
     func export(_ recording: Recording) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: recording.url.pathExtension) ?? .audio]

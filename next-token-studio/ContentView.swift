@@ -32,7 +32,13 @@ struct ContentView: View {
                             }
                             .padding(.vertical, 8).tag(recording.id)
                             .help(recording.name)
-                            .contextMenu { Button("导出原始录音…") { studio.export(recording) } }
+                            .contextMenu {
+                                Button("导出原始录音…") { studio.export(recording) }
+                                Divider()
+                                Button(role: .destructive) { studio.deleteRecording(recording) } label: {
+                                    Label("移到废纸篓", systemImage: "trash")
+                                }.disabled(studio.isBusy)
+                            }
                         }
                     } header: {
                         HStack { Text("录音资料库"); Spacer(); Text("\(studio.recordings.count)") }
@@ -80,6 +86,14 @@ struct ContentView: View {
             .navigationTitle("Next Token Studio")
             .toolbar {
                 ToolbarItem {
+                    Button(role: .destructive) {
+                        if let recording = studio.selected { studio.deleteRecording(recording) }
+                    } label: { Label("删除录音", systemImage: "trash") }
+                    .help("将所选录音和通道信息移到废纸篓")
+                    .keyboardShortcut(.delete, modifiers: [.command])
+                    .disabled(studio.selected == nil || studio.isBusy)
+                }
+                ToolbarItem {
                     Button {
                         if let recording = studio.selected { studio.export(recording) }
                     } label: { Label("导出原始录音", systemImage: "square.and.arrow.up") }
@@ -119,6 +133,7 @@ struct ContentView: View {
             if isPlayback {
                 HStack(spacing: 16) {
                     Label("\(studio.playbackChannelNames.count) 路音轨", systemImage: "waveform")
+                    if let recording = activeRecording { Text(recording.url.pathExtension.uppercased()) }
                     if studio.playbackSampleRate > 0 { Text(String(format: "%.1f kHz", studio.playbackSampleRate / 1000)) }
                     Spacer()
                     Text("点击波形定位播放")
