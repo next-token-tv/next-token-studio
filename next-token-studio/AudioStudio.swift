@@ -29,6 +29,10 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
     var elapsed: TimeInterval = 0
     var playingID: URL?
     var errorMessage: String?
+    var isExporting = false
+    var exportStatus: String?
+    var lastExportURL: URL?
+    private var exportTask: Task<Void, Never>?
     var inputDevices: [InputDevice] = []
     var selectedInputID: AudioDeviceID = 0 {
         didSet {
@@ -344,7 +348,7 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
     }
 
     func deleteRecording(_ recording: Recording) {
-        guard !isBusy, recordings.contains(where: { $0.id == recording.id }) else { return }
+        guard !isBusy, !isExporting, recordings.contains(where: { $0.id == recording.id }) else { return }
         if playingID == recording.id { stopPlayback() }
         do {
             try RecordingTrash.move(recording.url)
@@ -355,16 +359,76 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
         }
     }
 
-    func export(_ recording: Recording) {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: recording.url.pathExtension) ?? .audio]
-        panel.nameFieldStringValue = recording.url.lastPathComponent
+    private func exportBaseName(_ recording: Recording) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return "next-token-\(formatter.string(from: recording.createdAt))"
+    }
+
+    func exportWAV(_ recording: Recording) {
+        guard !isBusy, !isExporting else { return }
+        let panel = NSOpenPanel()
+        panel.title = "导出分轨 WAV"
+        panel.message = "每路导出一份单声道 WAV，保留完整时长、原始采样率和通道对应信息。"
+        panel.prompt = "导出到此文件夹"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
         panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            do {
-                let data = try Data(contentsOf: recording.url)
-                try data.write(to: url, options: .atomic)
-            } catch { self.errorMessage = "导出失败：\(error.localizedDescription)" }
+            guard response == .OK, let parent = panel.url else { return }
+            let folder = parent.appendingPathComponent("\(self.exportBaseName(recording))-\(UUID().uuidString.prefix(6).lowercased())-tracks", isDirectory: true)
+            self.runExport(recording, destination: folder, access: parent, split: true)
         }
+    }
+
+    func exportM4A(_ recording: Recording) {
+        guard !isBusy, !isExporting else { return }
+        let panel = NSSavePanel()
+        panel.title = "导出混音 M4A"
+        panel.message = "全部通道混合输出，AAC-LC / 48 kHz / 立体声 / 320 kbps。"
+        panel.allowedContentTypes = [.mpeg4Audio]
+        panel.nameFieldStringValue = exportBaseName(recording) + ".m4a"
+        panel.begin { response in
+            guard response == .OK, let destination = panel.url else { return }
+            self.runExport(recording, destination: destination, access: destination, split: false)
+        }
+    }
+
+    private func runExport(_ recording: Recording, destination: URL, access: URL, split: Bool) {
+        guard !isExporting else { return }
+        isExporting = true
+        lastExportURL = nil
+        exportStatus = split ? "正在导出分轨 WAV…" : "正在导出混音 M4A…"
+        let scoped = access.startAccessingSecurityScopedResource()
+        let source = recording.url
+        let names = recording.metadata?.channelNames ?? []
+        exportTask = Task { @MainActor [weak self] in
+            guard let self else { if scoped { access.stopAccessingSecurityScopedResource() }; return }
+            defer {
+                isExporting = false
+                exportTask = nil
+                if scoped { access.stopAccessingSecurityScopedResource() }
+            }
+            do {
+                let work = Task.detached {
+                    if split { try AudioExport.splitWAV(source: source, names: names, destination: destination) }
+                    else { try AudioExport.mixedM4A(source: source, destination: destination, replaceExisting: true) }
+                }
+                try await withTaskCancellationHandler(operation: { try await work.value }, onCancel: { work.cancel() })
+                lastExportURL = destination
+                exportStatus = split ? "分轨 WAV 已导出" : "混音 M4A 已导出"
+            } catch {
+                exportStatus = nil
+                if !(error is CancellationError) { errorMessage = "导出失败：\(error.localizedDescription)" }
+            }
+        }
+    }
+
+    func cancelExport() { exportTask?.cancel() }
+
+    func revealExport() {
+        if let lastExportURL { NSWorkspace.shared.activateFileViewerSelecting([lastExportURL]) }
     }
 }

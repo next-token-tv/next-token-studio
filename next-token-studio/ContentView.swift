@@ -33,11 +33,14 @@ struct ContentView: View {
                             .padding(.vertical, 8).tag(recording.id)
                             .help(recording.name)
                             .contextMenu {
-                                Button("导出原始录音…") { studio.export(recording) }
+                                Button("导出分轨 WAV…") { studio.exportWAV(recording) }
+                                    .disabled(studio.isBusy || studio.isExporting)
+                                Button("导出混音 M4A…") { studio.exportM4A(recording) }
+                                    .disabled(studio.isBusy || studio.isExporting)
                                 Divider()
                                 Button(role: .destructive) { studio.deleteRecording(recording) } label: {
                                     Label("移到废纸篓", systemImage: "trash")
-                                }.disabled(studio.isBusy)
+                                }.disabled(studio.isBusy || studio.isExporting)
                             }
                         }
                     } header: {
@@ -81,6 +84,20 @@ struct ContentView: View {
                 }
                 Divider()
                 if isPlayback { playbackTransport } else { recordingTransport }
+                if let status = studio.exportStatus {
+                    HStack(spacing: 10) {
+                        if studio.isExporting { ProgressView().controlSize(.small) }
+                        else { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
+                        Text(status).font(.caption)
+                        Spacer()
+                        if studio.isExporting { Button("取消") { studio.cancelExport() } }
+                        else {
+                            Button("在 Finder 中显示") { studio.revealExport() }
+                            Button { studio.exportStatus = nil } label: { Image(systemName: "xmark") }
+                                .help("关闭导出提示")
+                        }
+                    }.padding(.horizontal, 24).padding(.vertical, 10).background(.bar)
+                }
             }
             .background(Color(nsColor: .windowBackgroundColor))
             .navigationTitle("Next Token Studio")
@@ -91,13 +108,18 @@ struct ContentView: View {
                     } label: { Label("删除录音", systemImage: "trash") }
                     .help("将所选录音和通道信息移到废纸篓")
                     .keyboardShortcut(.delete, modifiers: [.command])
-                    .disabled(studio.selected == nil || studio.isBusy)
+                    .disabled(studio.selected == nil || studio.isBusy || studio.isExporting)
                 }
                 ToolbarItem {
-                    Button {
-                        if let recording = studio.selected { studio.export(recording) }
-                    } label: { Label("导出原始录音", systemImage: "square.and.arrow.up") }
-                    .disabled(studio.selected == nil || studio.isBusy)
+                    Menu {
+                        Button("导出分轨 WAV…") {
+                            if let recording = studio.selected { studio.exportWAV(recording) }
+                        }
+                        Button("导出混音 M4A…") {
+                            if let recording = studio.selected { studio.exportM4A(recording) }
+                        }
+                    } label: { Label("导出音频", systemImage: "square.and.arrow.up") }
+                    .disabled(studio.selected == nil || studio.isBusy || studio.isExporting)
                 }
             }
         }
