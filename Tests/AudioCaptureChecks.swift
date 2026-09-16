@@ -42,17 +42,9 @@ struct AudioCaptureChecks {
                     for frame in 0..<Int(saved.frameLength) {
                         precondition(saved.floatChannelData![channel][frame] == values[channel], "Saved samples must preserve all channels exactly")
                     }
-                    let preview = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("caf")
-                    defer { try? FileManager.default.removeItem(at: preview) }
-                    try ChannelPreview.render(source: url, channel: channel, destination: preview)
-                    let solo = try AVAudioFile(forReading: preview)
-                    precondition(solo.processingFormat.channelCount == 1)
-                    precondition(solo.length == file.length)
-                    let data = AVAudioPCMBuffer(pcmFormat: solo.processingFormat, frameCapacity: 512)!
-                    try solo.read(into: data)
-                    precondition(data.floatChannelData![0][0] == values[channel], "Solo must read the selected channel")
                 }
-                print("PASS: \(channelCount) channels @ \(Int(rate)) Hz; independent waveform, silent channel, pause/resume, lossless file, solo playback source")
+
+                print("PASS: \(channelCount) channels @ \(Int(rate)) Hz; independent waveform, silent channel, pause/resume, lossless file")
             }
         }
     }

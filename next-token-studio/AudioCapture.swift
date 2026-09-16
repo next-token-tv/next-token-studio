@@ -147,27 +147,3 @@ nonisolated final class CaptureWriter: @unchecked Sendable {
     }
     func close() { lock.lock(); file = nil; lock.unlock() }
 }
-
-nonisolated enum ChannelPreview {
-    // Audition one discrete channel through a mono file, without surround/LFE speaker routing.
-    static func render(source: URL, channel: Int, destination: URL) throws {
-        let input = try AVAudioFile(forReading: source)
-        guard channel >= 0, channel < Int(input.processingFormat.channelCount) else {
-            throw NSError(domain: "AudioStudio", code: 4, userInfo: [NSLocalizedDescriptionKey: "此录音不包含所选通道。"])
-        }
-        let format = AVAudioFormat(standardFormatWithSampleRate: input.processingFormat.sampleRate, channels: 1)!
-        let output = try AVAudioFile(forWriting: destination, settings: format.settings)
-        let sourceBuffer = AVAudioPCMBuffer(pcmFormat: input.processingFormat, frameCapacity: 8192)!
-        let mono = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8192)!
-        var remaining = input.length
-        while remaining > 0 {
-            try Task.checkCancellation()
-            try input.read(into: sourceBuffer, frameCount: AVAudioFrameCount(min(remaining, 8192)))
-            guard sourceBuffer.frameLength > 0 else { break }
-            remaining -= AVAudioFramePosition(sourceBuffer.frameLength)
-            mono.frameLength = sourceBuffer.frameLength
-            mono.floatChannelData![0].update(from: sourceBuffer.floatChannelData![channel], count: Int(mono.frameLength))
-            try output.write(from: mono)
-        }
-    }
-}

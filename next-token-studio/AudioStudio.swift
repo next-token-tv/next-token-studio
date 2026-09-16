@@ -41,7 +41,9 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
     var waveforms: [[Float]] = []
     var channelPeaks: [Float] = []
     var signalStatus: String?
-    var playbackChannel = 0
+    var playbackWaveforms: [[Float]] = []
+    var playbackPeaks: [Float] = []
+    var playbackSampleRate: Double = 0
     var playbackChannelNames: [String] = []
     var isPreparingPlayback = false
     private var previewURL: URL?
@@ -122,6 +124,7 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
             return
         }
         stopPlayback()
+        selectedID = nil
         do {
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyy-MM-dd HH-mm-ss"
@@ -219,6 +222,20 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
         recordingURL = nil
     }
 
+    func showRecorder() {
+        guard !isBusy else { return }
+        stopPlayback()
+        selectedID = nil
+    }
+
+    func openRecording(_ recording: Recording) {
+        guard !isBusy, playingID != recording.id else { return }
+        stopPlayback()
+        playingID = recording.id
+        selectedID = recording.id
+        preparePlayback(recording, autoPlay: false)
+    }
+
     func togglePlayback(_ recording: Recording) {
         guard !isBusy, !isPreparingPlayback else { return }
         if playingID == recording.id, let player {
@@ -226,8 +243,9 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
                 player.pause()
                 isPlaying = false
             } else {
-                if player.currentTime >= player.duration { player.currentTime = 0 }
+                if playbackTime >= playbackDuration { player.currentTime = 0 }
                 isPlaying = player.play()
+                if !isPlaying { errorMessage = "无法开始播放，请检查输出设备。" }
             }
             playbackTime = player.currentTime
             return
@@ -235,70 +253,58 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
         stopPlayback()
         playingID = recording.id
         selectedID = recording.id
-        preparePlayback(recording, channel: 0, time: 0, autoPlay: true)
+        preparePlayback(recording, autoPlay: true)
     }
 
-    func selectPlaybackChannel(_ channel: Int) {
-        guard let recording = recordings.first(where: { $0.id == playingID }) else { return }
-        preparePlayback(recording, channel: channel, time: playbackTime, autoPlay: isPlaying)
-    }
-
-    private func preparePlayback(_ recording: Recording, channel: Int, time: TimeInterval, autoPlay: Bool) {
-        player?.stop()
-        player = nil
-        playbackTimer?.invalidate()
-        playbackTimer = nil
-        previewTask?.cancel()
+    private func preparePlayback(_ recording: Recording, autoPlay: Bool) {
         previewGeneration = UUID()
         let generation = previewGeneration
-        isPlaying = false
         isPreparingPlayback = true
-        playbackChannel = channel
+        playbackChannelNames = recording.metadata?.channelNames ?? []
         previewTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            var temporary: URL?
+            let output = FileManager.default.temporaryDirectory.appendingPathComponent("mix-\(UUID().uuidString).caf")
             do {
-                let file = try AVAudioFile(forReading: recording.url)
-                let count = Int(file.processingFormat.channelCount)
-                playbackChannelNames = recording.metadata?.channelNames ?? (1...count).map { "通道 \($0)" }
-                playbackDuration = Double(file.length) / file.processingFormat.sampleRate
-                var source = recording.url
-                if count > 1 {
-                    let output = FileManager.default.temporaryDirectory.appendingPathComponent("preview-\(UUID().uuidString).caf")
-                    temporary = output
-                    let render = Task.detached { try ChannelPreview.render(source: recording.url, channel: channel, destination: output) }
-                    try await withTaskCancellationHandler(operation: { try await render.value }, onCancel: { render.cancel() })
-                    source = output
-                }
+                let render = Task.detached { try PlaybackRender.prepare(source: recording.url, destination: output) }
+                let overview = try await withTaskCancellationHandler(operation: { try await render.value }, onCancel: { render.cancel() })
                 try Task.checkCancellation()
-                guard generation == previewGeneration else { if let temporary { try? FileManager.default.removeItem(at: temporary) }; return }
-                let audio = try AVAudioPlayer(contentsOf: source)
+                guard generation == previewGeneration else { try? FileManager.default.removeItem(at: output); return }
+                let audio = try AVAudioPlayer(contentsOf: output)
                 audio.delegate = self
-                audio.currentTime = min(time, audio.duration)
                 guard audio.prepareToPlay() else { throw NSError(domain: "AudioStudio", code: 2, userInfo: [NSLocalizedDescriptionKey: "无法准备播放此文件。"] ) }
-                if let previewURL { try? FileManager.default.removeItem(at: previewURL) }
-                previewURL = temporary
+                previewURL = output
                 player = audio
-                playbackTime = audio.currentTime
+                playbackWaveforms = overview.waveforms
+                playbackPeaks = overview.channelPeaks
+                playbackSampleRate = overview.sampleRate
+                if playbackChannelNames.count != overview.waveforms.count {
+                    playbackChannelNames = overview.waveforms.indices.map { "输入 \($0 + 1)" }
+                }
+                playbackTime = 0
                 playbackDuration = audio.duration
                 if autoPlay {
                     guard audio.play() else { throw NSError(domain: "AudioStudio", code: 2, userInfo: [NSLocalizedDescriptionKey: "无法播放此文件。"] ) }
                     isPlaying = true
                 }
                 isPreparingPlayback = false
-                playbackTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+                playbackTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
                     Task { @MainActor [weak self] in
                         guard let self, self.isPlaying, let player = self.player else { return }
                         self.playbackTime = player.currentTime
                     }
                 }
             } catch {
-                if let temporary { try? FileManager.default.removeItem(at: temporary) }
+                try? FileManager.default.removeItem(at: output)
                 guard generation == previewGeneration else { return }
                 stopPlayback()
+                selectedID = nil
                 if !(error is CancellationError) { errorMessage = "播放失败：\(error.localizedDescription)" }
             }
         }
+    }
+
+    func rewindPlayback() {
+        seek(to: 0)
     }
 
     func seek(to time: TimeInterval) {
@@ -319,6 +325,9 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
         if let previewURL { try? FileManager.default.removeItem(at: previewURL) }
         previewURL = nil
         playbackChannelNames = []
+        playbackWaveforms = []
+        playbackPeaks = []
+        playbackSampleRate = 0
         playingID = nil
         isPlaying = false
         playbackTime = 0

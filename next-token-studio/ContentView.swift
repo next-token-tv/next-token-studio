@@ -2,43 +2,94 @@ import SwiftUI
 
 struct ContentView: View {
     @Bindable var studio: AudioStudio
-    @State private var section: String? = "record"
+    private var isPlayback: Bool { studio.playingID != nil }
+    private var activeRecording: Recording? { studio.recordings.first { $0.id == studio.playingID } }
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $section) {
-                Section("工作区") {
-                    Label("音频录制", systemImage: "mic").tag("record")
+            VStack(spacing: 0) {
+                Button { studio.showRecorder() } label: {
+                    Label("录制新音频", systemImage: "mic.badge.plus")
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 7)
                 }
-                Section("资料库") {
-                    Label("所有录音", systemImage: "waveform").badge(studio.recordings.count).tag("library")
+                .buttonStyle(.bordered).controlSize(.large).padding(14)
+                .disabled(studio.isBusy)
+                List(selection: $studio.selectedID) {
+                    Section {
+                        ForEach(studio.recordings) { recording in
+                            VStack(alignment: .leading, spacing: 7) {
+                                HStack(spacing: 7) {
+                                    Image(systemName: studio.playingID == recording.id && studio.isPlaying ? "speaker.wave.2.fill" : "waveform")
+                                        .foregroundStyle(studio.playingID == recording.id ? Color.accentColor : .secondary)
+                                    Text(recording.createdAt, format: .dateTime.month().day().hour().minute().second())
+                                        .font(.system(size: 13, weight: .medium))
+                                }
+                                HStack {
+                                    Text(recording.metadata.map { "\($0.channelNames.count) 路录音" } ?? "录音")
+                                    Spacer()
+                                    Text(recording.url.pathExtension.uppercased())
+                                }.font(.caption).foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 8).tag(recording.id)
+                            .help(recording.name)
+                            .contextMenu { Button("导出原始录音…") { studio.export(recording) } }
+                        }
+                    } header: {
+                        HStack { Text("录音资料库"); Spacer(); Text("\(studio.recordings.count)") }
+                    }
+                }.listStyle(.sidebar).disabled(studio.isBusy)
+                if studio.recordings.isEmpty {
+                    Text("录制的音频会保存在这里")
+                        .font(.caption).foregroundStyle(.secondary).padding()
                 }
+                Spacer(minLength: 0)
+                Label("录音保存在本机", systemImage: "internaldrive")
+                    .font(.caption).foregroundStyle(.secondary).padding(16)
             }
-            .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
-            .safeAreaInset(edge: .bottom) {
-                Label("Next Token Studio", systemImage: "waveform.circle")
-                    .font(.footnote).foregroundStyle(.secondary).padding()
-            }
+            .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 320)
         } detail: {
             VStack(spacing: 0) {
-                if section == "record" { recorderPanel }
-                recordingList
-                if studio.playingID != nil { playerPanel }
-            }
-            .navigationTitle(section == "record" ? "音频录制" : "所有录音")
-            .toolbar {
-                ToolbarItem {
-                    Button { Task { await studio.startRecording() } } label: {
-                        Label("新建录音", systemImage: "mic.badge.plus")
-                    }.disabled(studio.isBusy)
+                workspaceHeader
+                Divider()
+                if studio.isPreparingPlayback {
+                    VStack(spacing: 14) {
+                        ProgressView()
+                        Text("正在准备音频与波形…").font(.callout).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    TrackWorkspace(
+                        names: isPlayback ? studio.playbackChannelNames : studio.displayedChannelNames,
+                        waveforms: isPlayback ? studio.playbackWaveforms : studio.waveforms,
+                        peaks: isPlayback ? studio.playbackPeaks : studio.channelPeaks,
+                        isPlayback: isPlayback,
+                        paused: studio.isPaused,
+                        duration: studio.playbackDuration,
+                        position: studio.playbackTime,
+                        seek: { studio.seek(to: $0) }
+                    )
                 }
+                if let status = studio.signalStatus, !isPlayback {
+                    Label(status, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 24).padding(.bottom, 12)
+                }
+                Divider()
+                if isPlayback { playbackTransport } else { recordingTransport }
+            }
+            .background(Color(nsColor: .windowBackgroundColor))
+            .navigationTitle("Next Token Studio")
+            .toolbar {
                 ToolbarItem {
                     Button {
                         if let recording = studio.selected { studio.export(recording) }
-                    } label: { Label("导出录音", systemImage: "square.and.arrow.up") }
-                    .disabled(studio.selected == nil)
+                    } label: { Label("导出原始录音", systemImage: "square.and.arrow.up") }
+                    .disabled(studio.selected == nil || studio.isBusy)
                 }
+            }
+        }
+        .onChange(of: studio.selectedID) { _, selection in
+            if let recording = studio.recordings.first(where: { $0.id == selection }) {
+                studio.openRecording(recording)
             }
         }
         .alert("无法完成操作", isPresented: Binding(get: { studio.errorMessage != nil }, set: { if !$0 { studio.errorMessage = nil } })) {
@@ -46,179 +97,100 @@ struct ContentView: View {
         } message: { Text(studio.errorMessage ?? "") }
     }
 
-    private var recorderPanel: some View {
-        VStack(spacing: 10) {
-            Picker("输入音源", selection: $studio.selectedInputID) {
-                if studio.inputDevices.isEmpty { Text("没有可用的输入设备").tag(UInt32(0)) }
-                ForEach(studio.inputDevices) { device in Text("\(device.name) · \(device.channelCount) 路输入").tag(device.id) }
-            }
-            .frame(maxWidth: 560)
-            .disabled(studio.isBusy)
-            Label(studio.isRecording ? (studio.isPaused ? "录音已暂停" : "正在录音") : "准备录制", systemImage: "mic.fill")
-                .font(.headline).foregroundStyle(studio.isRecording ? .red : .secondary)
-            Text(studio.clock).font(.system(size: 32, weight: .light, design: .monospaced)).monospacedDigit()
-            ScrollView {
-                VStack(spacing: 8) {
-                    ForEach(Array(studio.displayedChannelNames.enumerated()), id: \.offset) { index, name in
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("CH \(index + 1) · \(name)").font(.caption).lineLimit(1)
-                                Text(channelLevel(index)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                            }.frame(width: 185, alignment: .leading)
-                            LiveWaveform(samples: studio.waveforms.indices.contains(index) ? studio.waveforms[index] : [], paused: studio.isPaused)
-                                .frame(height: 42)
-                                .accessibilityLabel("通道 \(index + 1)，\(name)，\(channelLevel(index))，最近八秒波形")
-                        }
-                    }
+    private var workspaceHeader: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(isPlayback ? "录音回放" : "多轨录音")
+                        .font(.system(size: 23, weight: .semibold))
+                    Text(isPlayback ? (activeRecording?.name ?? "录音") : "每一路输入，独立记录")
+                        .font(.callout).foregroundStyle(.secondary).lineLimit(1)
                 }
-            }
-            .frame(height: CGFloat(min(max(studio.displayedChannelNames.count, 1), 6) * 50))
-            HStack {
-                Text("最近 8 秒 · 显示范围 −60 至 0 dBFS")
                 Spacer()
-                Text(studio.isPaused ? "已暂停" : "当前")
-            }.font(.caption2).foregroundStyle(.secondary)
-            if let status = studio.signalStatus {
-                Label(status, systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
-            }
-            HStack(spacing: 14) {
-                if studio.isRecording {
-                    Button { studio.togglePause() } label: {
-                        Label(studio.isPaused ? "继续" : "暂停", systemImage: studio.isPaused ? "play.fill" : "pause.fill")
-                    }
-                    Button(role: .destructive) { studio.stopRecording() } label: {
-                        Label("停止并保存", systemImage: "stop.fill")
-                    }.buttonStyle(.borderedProminent).tint(.red)
+                if isPlayback {
+                    Label("全部通道混合输出", systemImage: "speaker.wave.2")
+                        .font(.caption).foregroundStyle(.blue).padding(.horizontal, 11).padding(.vertical, 7)
+                        .background(.blue.opacity(0.08), in: Capsule())
                 } else {
-                    Button { Task { await studio.startRecording() } } label: {
-                        Label(studio.isRequestingPermission ? "等待麦克风授权…" : "开始录音", systemImage: "record.circle")
-                    }.buttonStyle(.borderedProminent).tint(.red).disabled(studio.isRequestingPermission || studio.inputDevices.isEmpty)
-                }
-            }.controlSize(.large)
-            Text("CAF 无损 · 保留全部 \(studio.displayedChannelNames.count) 路输入 · 设备原始采样率")
-                .font(.caption).foregroundStyle(.secondary)
-        }.frame(maxWidth: .infinity).padding(20)
-    }
-
-    private func channelLevel(_ index: Int) -> String {
-        guard studio.channelPeaks.indices.contains(index) else { return "等待录音" }
-        let peak = studio.channelPeaks[index]
-        if peak < 0.00001 { return "无信号 · −∞ dBFS" }
-        return String(format: "%.1f dBFS%@", 20 * log10(peak), peak >= 1 ? " · 削波" : "")
-    }
-
-    private var playerPanel: some View {
-        VStack(spacing: 12) {
-            Divider()
-            HStack(spacing: 16) {
-                Button {
-                    if let recording = studio.recordings.first(where: { $0.id == studio.playingID }) {
-                        studio.togglePlayback(recording)
-                    }
-                } label: {
-                    Image(systemName: studio.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.title2).frame(width: 36, height: 36)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(studio.isPreparingPlayback)
-                .clipShape(Circle())
-                .help(studio.isPlaying ? "暂停播放" : "继续播放")
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(studio.playingID?.deletingPathExtension().lastPathComponent ?? "录音")
-                            .font(.headline).lineLimit(1)
-                        Spacer()
-                        if studio.isPreparingPlayback { ProgressView().controlSize(.small) }
-                        if studio.playbackChannelNames.count > 1 {
-                            Picker("试听", selection: Binding(get: { studio.playbackChannel }, set: { studio.selectPlaybackChannel($0) })) {
-                                ForEach(Array(studio.playbackChannelNames.enumerated()), id: \.offset) { index, name in
-                                    Text("CH \(index + 1) · \(name)").tag(index)
-                                }
-                            }.frame(maxWidth: 260).disabled(studio.isPreparingPlayback)
-                        }
-                    }
-                    Slider(value: Binding(get: { studio.playbackTime }, set: { studio.seek(to: $0) }), in: 0...max(studio.playbackDuration, 0.01))
-                        .accessibilityLabel("播放进度")
-                        .disabled(studio.isPreparingPlayback)
-                    HStack {
-                        Text(playbackClock(studio.playbackTime))
-                        Spacer()
-                        Text(playbackClock(studio.playbackDuration))
-                    }.font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                }
-                Button { studio.stopPlayback() } label: { Image(systemName: "stop.fill") }
-                    .help("停止播放")
-            }.padding(.horizontal, 24).padding(.bottom, 18)
-        }.background(.bar)
-    }
-
-    private func playbackClock(_ time: TimeInterval) -> String {
-        let seconds = Int(max(0, time))
-        return String(format: "%02d:%02d", seconds / 60, seconds % 60)
-    }
-
-    private var recordingList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Divider()
-            Text("录音资料库").font(.headline).padding()
-            if studio.recordings.isEmpty {
-                ContentUnavailableView("还没有录音", systemImage: "waveform", description: Text("开始录音，停止后会自动保存到这里。"))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List(selection: $studio.selectedID) {
-                    ForEach(studio.recordings) { recording in
-                        HStack(spacing: 12) {
-                            Image(systemName: "waveform").foregroundStyle(.red).font(.title2)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(recording.name)
-                                if let metadata = recording.metadata {
-                                    Text("\(metadata.channelNames.count) 路 · \(metadata.inputName)")
-                                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                                }
-                                Text(recording.createdAt, format: .dateTime.year().month().day().hour().minute())
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button { studio.togglePlayback(recording) } label: {
-                                Image(systemName: studio.playingID == recording.id && studio.isPlaying ? "pause.fill" : "play.fill")
-                            }.help(studio.playingID == recording.id && studio.isPlaying ? "暂停播放" : "播放录音").disabled(studio.isBusy || studio.isPreparingPlayback)
-                        }.padding(.vertical, 6).tag(recording.id)
-                        .contextMenu {
-                            Button("导出录音…") { studio.export(recording) }
-                        }
-                    }
+                    Label(studio.isRecording ? (studio.isPaused ? "已暂停" : "正在录音") : "准备录制", systemImage: studio.isRecording ? "record.circle" : "mic")
+                        .font(.callout).foregroundStyle(studio.isRecording ? .red : .secondary)
                 }
             }
-        }
+            if isPlayback {
+                HStack(spacing: 16) {
+                    Label("\(studio.playbackChannelNames.count) 路音轨", systemImage: "waveform")
+                    if studio.playbackSampleRate > 0 { Text(String(format: "%.1f kHz", studio.playbackSampleRate / 1000)) }
+                    Spacer()
+                    Text("点击波形定位播放")
+                }.font(.caption).foregroundStyle(.secondary)
+            } else {
+                HStack {
+                    Picker("输入设备", selection: $studio.selectedInputID) {
+                        if studio.inputDevices.isEmpty { Text("没有可用输入").tag(UInt32(0)) }
+                        ForEach(studio.inputDevices) { device in
+                            Text("\(device.name)（\(device.channelCount) 路）").tag(device.id)
+                        }
+                    }.disabled(studio.isBusy)
+                    Spacer(minLength: 10)
+                }
+            }
+        }.padding(24)
+    }
+
+    private var recordingTransport: some View {
+        HStack(spacing: 20) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(studio.clock).font(.system(size: 27, weight: .medium, design: .monospaced)).monospacedDigit()
+                Text("全部通道无损保存").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if studio.isRecording {
+                Button { studio.togglePause() } label: {
+                    Label(studio.isPaused ? "继续录音" : "暂停", systemImage: studio.isPaused ? "play.fill" : "pause.fill")
+                }
+                Button(role: .destructive) { studio.stopRecording() } label: {
+                    Label("停止并保存", systemImage: "stop.fill")
+                }.buttonStyle(.borderedProminent).tint(.red)
+            } else {
+                Button { Task { await studio.startRecording() } } label: {
+                    Label(studio.isRequestingPermission ? "等待授权…" : "开始录音", systemImage: "record.circle")
+                }.buttonStyle(.borderedProminent).tint(.red)
+                    .disabled(studio.isRequestingPermission || studio.inputDevices.isEmpty)
+            }
+        }.controlSize(.large).padding(24).background(.bar)
+    }
+
+    private var playbackTransport: some View {
+        VStack(spacing: 16) {
+            HStack(spacing: 12) {
+                Text(timeLabel(studio.playbackTime)).monospacedDigit().frame(width: 65, alignment: .leading)
+                Slider(value: Binding(get: { studio.playbackTime }, set: { studio.seek(to: $0) }), in: 0...max(studio.playbackDuration, 0.01))
+                    .accessibilityLabel("播放进度")
+                Text(timeLabel(studio.playbackDuration)).monospacedDigit().frame(width: 65, alignment: .trailing).foregroundStyle(.secondary)
+            }.font(.caption)
+            HStack(spacing: 18) {
+                Label("\(studio.playbackChannelNames.count) 路混合回放", systemImage: "speaker.wave.2.fill")
+                    .font(.callout).foregroundStyle(.secondary)
+                Spacer()
+                Button { studio.rewindPlayback() } label: { Image(systemName: "backward.end.fill") }
+                    .help("回到开头").accessibilityLabel("回到开头")
+                Button {
+                    if let recording = activeRecording { studio.togglePlayback(recording) }
+                } label: {
+                    Label(studio.isPlaying ? "暂停" : "播放", systemImage: studio.isPlaying ? "pause.fill" : "play.fill")
+                        .frame(width: 80)
+                }.buttonStyle(.borderedProminent).controlSize(.large)
+                    .keyboardShortcut(.space, modifiers: [])
+                Spacer()
+                Text(studio.isPlaying ? "正在播放" : (studio.playbackTime >= studio.playbackDuration && studio.playbackDuration > 0 ? "播放结束" : "已暂停"))
+                    .font(.caption).foregroundStyle(.secondary).frame(width: 90, alignment: .trailing)
+            }
+        }.disabled(studio.isPreparingPlayback).padding(24).background(.bar)
     }
 }
 
-
-private struct LiveWaveform: View {
-    let samples: [Float]
-    let paused: Bool
-
-    var body: some View {
-        Canvas { context, size in
-            let center = size.height / 2
-            var baseline = Path()
-            baseline.move(to: CGPoint(x: 0, y: center))
-            baseline.addLine(to: CGPoint(x: size.width, y: center))
-            context.stroke(baseline, with: .color(.secondary.opacity(0.25)), lineWidth: 1)
-            let step = size.width / 200
-            var bars = Path()
-            for (index, amplitude) in samples.suffix(200).enumerated() {
-                let x = CGFloat(200 - min(samples.count, 200) + index) * step
-                let decibels = amplitude > 0 ? 20 * log10(amplitude) : -100
-                let displayLevel = max(0, min(1, (decibels + 60) / 60))
-                let height = max(1, CGFloat(displayLevel) * (size.height - 8))
-                bars.move(to: CGPoint(x: x, y: center - height / 2))
-                bars.addLine(to: CGPoint(x: x, y: center + height / 2))
-            }
-            context.stroke(bars, with: .color(paused ? .secondary : .red), style: StrokeStyle(lineWidth: max(1, step * 0.65), lineCap: .round))
-        }
-        .padding(.horizontal, 10)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
-    }
+func timeLabel(_ time: TimeInterval) -> String {
+    let total = max(0, Int(time.isFinite ? time : 0))
+    if total >= 3600 { return String(format: "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60) }
+    return String(format: "%02d:%02d", total / 60, total % 60)
 }
