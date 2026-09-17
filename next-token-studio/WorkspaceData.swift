@@ -66,7 +66,7 @@ nonisolated enum WorkspaceData {
         guard fm.fileExists(atPath: legacy.path) else { return }
         let destination = root.appendingPathComponent("recordings")
         let files = try fm.contentsOfDirectory(at: legacy, includingPropertiesForKeys: [.isRegularFileKey])
-            .filter { ["caf", "m4a", "json"].contains($0.pathExtension) && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+            .filter { ["caf", "wav", "m4a", "json"].contains($0.pathExtension) && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
         for file in files {
             let target = destination.appendingPathComponent(file.lastPathComponent)
             guard !fm.fileExists(atPath: target.path) else { throw failure("迁移遇到同名文件，未覆盖：\(file.lastPathComponent)") }

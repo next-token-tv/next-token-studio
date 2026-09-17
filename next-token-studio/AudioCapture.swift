@@ -116,6 +116,11 @@ nonisolated final class CaptureWriter: @unchecked Sendable {
     static let waveformCapacity = 800
     private let lock = NSLock()
     private var file: AVAudioFile?
+    private let baseURL: URL
+    private let segmentFrameLimit: Int64
+    private var segmentFrames: Int64 = 0
+    private var urls: [URL]
+    var outputURLs: [URL] { lock.lock(); defer { lock.unlock() }; return urls }
     private let format: AVAudioFormat
     private var paused = false
     private var frames: Int64 = 0
@@ -129,10 +134,14 @@ nonisolated final class CaptureWriter: @unchecked Sendable {
     private var failure: String?
     private var lastBufferAt: Date?
 
-    init(url: URL, inputFormat: AVAudioFormat) throws {
+    init(url: URL, inputFormat: AVAudioFormat, maximumSegmentBytes: Int64 = 3_900_000_000) throws {
         guard inputFormat.commonFormat == .pcmFormatFloat32, !inputFormat.isInterleaved, inputFormat.channelCount > 0, inputFormat.sampleRate > 0 else {
             throw NSError(domain: "AudioStudio", code: 3, userInfo: [NSLocalizedDescriptionKey: "此输入设备的音频格式不受支持。"])
         }
+        baseURL = url
+        urls = [url]
+        segmentFrameLimit = url.pathExtension.lowercased() == "wav"
+            ? max(1, maximumSegmentBytes / (Int64(inputFormat.channelCount) * 4)) : Int64.max
         format = inputFormat
         histories = Array(repeating: Array(repeating: 0, count: Self.waveformCapacity), count: Int(format.channelCount))
         peaks = Array(repeating: 0, count: Int(format.channelCount))
@@ -146,7 +155,7 @@ nonisolated final class CaptureWriter: @unchecked Sendable {
     func append(_ input: AVAudioPCMBuffer) {
         lock.lock()
         defer { lock.unlock() }
-        guard failure == nil, let file else { return }
+        guard failure == nil, file != nil else { return }
         lastBufferAt = Date()
         guard !paused, input.frameLength > 0 else { return }
         guard input.format.channelCount == format.channelCount, input.format.sampleRate == format.sampleRate,
@@ -154,7 +163,7 @@ nonisolated final class CaptureWriter: @unchecked Sendable {
             failure = "输入通道或采样率已改变，请重新开始录音。"
             return
         }
-        do { try file.write(from: input) } catch { failure = error.localizedDescription; return }
+        do { try writeSegments(input) } catch { failure = error.localizedDescription; return }
         frames += Int64(input.frameLength)
         for index in 0..<Int(input.frameLength) {
             for channel in peaks.indices {
@@ -171,6 +180,35 @@ nonisolated final class CaptureWriter: @unchecked Sendable {
                 historyCount = min(historyCount + 1, Self.waveformCapacity)
                 binFrames = 0
             }
+        }
+    }
+
+    private func writeSegments(_ input: AVAudioPCMBuffer) throws {
+        var offset = 0
+        while offset < Int(input.frameLength) {
+            if segmentFrames == segmentFrameLimit {
+                file = nil // Finalize the previous WAV header before opening the next segment.
+                let next = baseURL.deletingPathExtension()
+                    .appendingPathExtension("part-\(String(format: "%03d", urls.count + 1)).wav")
+                var settings = format.settings
+                settings[AVLinearPCMIsNonInterleaved] = false
+                file = try AVAudioFile(forWriting: next, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+                urls.append(next)
+                segmentFrames = 0
+            }
+            let count = min(Int(input.frameLength) - offset, Int(segmentFrameLimit - segmentFrames))
+            if offset == 0 && count == Int(input.frameLength) {
+                try file!.write(from: input)
+            } else {
+                let slice = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
+                slice.frameLength = AVAudioFrameCount(count)
+                for channel in 0..<Int(format.channelCount) {
+                    slice.floatChannelData![channel].update(from: input.floatChannelData![channel] + offset, count: count)
+                }
+                try file!.write(from: slice)
+            }
+            segmentFrames += Int64(count)
+            offset += count
         }
     }
 

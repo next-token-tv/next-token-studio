@@ -22,7 +22,7 @@ struct Recording: Identifiable, Hashable {
 }
 
 @MainActor @Observable
-final class AudioStudio: NSObject, AVAudioPlayerDelegate {
+final class AudioStudio: NSObject {
     let workspace = StudioWorkspace()
     var recordings: [Recording] = []
     var selectedID: URL?
@@ -54,7 +54,6 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
     var playbackSampleRate: Double = 0
     var playbackChannelNames: [String] = []
     var isPreparingPlayback = false
-    private var previewURL: URL?
     private var previewTask: Task<Void, Never>?
     private var previewGeneration = UUID()
     private var recordingStartedAt: Date?
@@ -68,7 +67,7 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
     private var playbackTimer: Timer?
     private var deviceTimer: Timer?
     private var configurationObserver: NSObjectProtocol?
-    private var player: AVAudioPlayer?
+    private var player: StreamingPlayback?
     private var timer: Timer?
 
     var isBusy: Bool { isRecording || isRequestingPermission || isMatching }
@@ -142,7 +141,7 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
         guard workspace.root != nil else { return }
         do {
             recordings = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.creationDateKey])
-                .filter { ["m4a", "caf"].contains($0.pathExtension) }
+                .filter { ["m4a", "caf", "wav"].contains($0.pathExtension) }
                 .map { url in
                     let metadata = (try? Data(contentsOf: url.appendingPathExtension("json"))).flatMap { try? JSONDecoder().decode(RecordingMetadata.self, from: $0) }
                     return Recording(url: url, createdAt: (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast, metadata: metadata)
@@ -166,7 +165,7 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyy-MM-dd HH-mm-ss"
             let name = "录音 \(formatter.string(from: Date()))-\(UUID().uuidString.prefix(4))"
-            let url = try directory.appendingPathComponent(name).appendingPathExtension("caf")
+            let url = try directory.appendingPathComponent(name).appendingPathExtension("wav")
             selectPreferredInput()
             guard let device = selectedInput else { throw NSError(domain: "AudioStudio", code: 1, userInfo: [NSLocalizedDescriptionKey: "没有可用的音频输入设备。"] ) }
             let engine = AVAudioEngine()
@@ -242,6 +241,7 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
         engine?.inputNode.removeTap(onBus: 0)
         if let snapshot = writer?.snapshot() { elapsed = snapshot.elapsed; waveforms = snapshot.waveforms; channelPeaks = snapshot.peaks }
         writer?.close()
+        let recordedURLs = writer?.outputURLs ?? []
         writer = nil
         engine = nil
         timer?.invalidate()
@@ -249,8 +249,11 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
         isRecording = false
         isPaused = false
         signalStatus = nil
-        if let recordingURL, let recordingMetadata {
-            do { try JSONEncoder().encode(recordingMetadata).write(to: recordingURL.appendingPathExtension("json"), options: .atomic) }
+        if let recordingMetadata {
+            do {
+                let data = try JSONEncoder().encode(recordingMetadata)
+                for url in recordedURLs { try data.write(to: url.appendingPathExtension("json"), options: .atomic) }
+            }
             catch { errorMessage = "录音已保存，但通道名称保存失败：\(error.localizedDescription)" }
         }
         recordingMetadata = nil
@@ -300,18 +303,14 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
         playbackChannelNames = recording.metadata?.channelNames ?? []
         previewTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            var pendingOutput: URL?
             do {
-                let output = try workspace.folder("cache").appendingPathComponent("mix-\(UUID().uuidString).caf")
-                pendingOutput = output
-                let render = Task.detached { try PlaybackRender.prepare(source: recording.url, destination: output) }
-                let overview = try await withTaskCancellationHandler(operation: { try await render.value }, onCancel: { render.cancel() })
+                let cache = try workspace.folder("cache")
+                let render = Task.detached { try PlaybackRender.cached(source: recording.url, cache: cache) }
+                let prepared = try await withTaskCancellationHandler(operation: { try await render.value }, onCancel: { render.cancel() })
                 try Task.checkCancellation()
-                guard generation == previewGeneration else { try? FileManager.default.removeItem(at: output); return }
-                let audio = try AVAudioPlayer(contentsOf: output)
-                audio.delegate = self
-                guard audio.prepareToPlay() else { throw NSError(domain: "AudioStudio", code: 2, userInfo: [NSLocalizedDescriptionKey: "无法准备播放此文件。"] ) }
-                previewURL = output
+                guard generation == previewGeneration else { return }
+                let overview = prepared
+                let audio = try StreamingPlayback(source: recording.url, gain: overview.mixGain)
                 player = audio
                 playbackWaveforms = overview.waveforms
                 playbackPeaks = overview.channelPeaks
@@ -330,10 +329,14 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
                     Task { @MainActor [weak self] in
                         guard let self, self.isPlaying, let player = self.player else { return }
                         self.playbackTime = player.currentTime
+                        if player.hasEnded { self.isPlaying = false }
+                        if let error = player.playbackError {
+                            self.isPlaying = false
+                            self.errorMessage = "播放中断：\(error.localizedDescription)"
+                        }
                     }
                 }
             } catch {
-                if let pendingOutput { try? FileManager.default.removeItem(at: pendingOutput) }
                 guard generation == previewGeneration else { return }
                 stopPlayback()
                 selectedID = nil
@@ -361,8 +364,6 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
         playbackTimer = nil
         player?.stop()
         player = nil
-        if let previewURL { try? FileManager.default.removeItem(at: previewURL) }
-        previewURL = nil
         playbackChannelNames = []
         playbackWaveforms = []
         playbackPeaks = []
@@ -373,20 +374,14 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
         playbackDuration = 0
     }
 
-    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        Task { @MainActor [weak self] in
-            guard let self, self.player === player else { return }
-            self.isPlaying = false
-            self.playbackTime = self.playbackDuration
-            if !flag { self.errorMessage = "播放中断，请重新播放。" }
-        }
-    }
-
     func deleteRecording(_ recording: Recording) {
         guard !isBusy, !isExporting, recordings.contains(where: { $0.id == recording.id }) else { return }
         if playingID == recording.id { stopPlayback() }
         do {
             try RecordingTrash.move(recording.url)
+            if let cache = try? workspace.folder("cache") {
+                PlaybackRender.removeCache(source: recording.url, cache: cache)
+            }
             if selectedID == recording.id { selectedID = nil }
             reload()
         } catch {

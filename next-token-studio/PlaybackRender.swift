@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
+import CryptoKit
 
-nonisolated struct PlaybackOverview: Sendable {
+nonisolated struct PlaybackOverview: Sendable, Codable {
     let waveforms: [[Float]]
     let channelPeaks: [Float]
     let duration: TimeInterval
@@ -9,9 +10,53 @@ nonisolated struct PlaybackOverview: Sendable {
 }
 
 nonisolated enum PlaybackRender {
+    private struct CacheEntry: Codable {
+        let signature: String
+        let overview: PlaybackOverview
+    }
+
+    private static func cacheDirectory(source: URL, cache: URL) -> URL {
+        let hash = SHA256.hash(data: Data(source.standardizedFileURL.path.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        return cache.appendingPathComponent("waveforms-v2-" + hash, isDirectory: true)
+    }
+
+    private static func signature(_ source: URL) throws -> String {
+        let values = try FileManager.default.attributesOfItem(atPath: source.path)
+        guard let size = values[.size] as? NSNumber, let date = values[.modificationDate] as? Date else { throw readError() }
+        return "\(size)-\(date.timeIntervalSince1970)"
+    }
+
+    static func removeCache(source: URL, cache: URL) {
+        try? FileManager.default.removeItem(at: cacheDirectory(source: source, cache: cache))
+    }
+
+    static func cached(source: URL, cache: URL) throws -> PlaybackOverview {
+        let manager = FileManager.default
+        let folder = cacheDirectory(source: source, cache: cache)
+        let stamp = try signature(source)
+        let index = folder.appendingPathComponent("waveforms.plist")
+        if let data = try? Data(contentsOf: index),
+           let entry = try? PropertyListDecoder().decode(CacheEntry.self, from: data),
+           entry.signature == stamp, entry.overview.duration > 0,
+           !entry.overview.waveforms.isEmpty,
+           entry.overview.waveforms.count == entry.overview.channelPeaks.count,
+           entry.overview.waveforms.allSatisfy({ !$0.isEmpty && $0.count <= 1600 && $0.allSatisfy { $0.isFinite } }) {
+            return entry.overview
+        }
+        let overview = try analyze(source: source)
+        try Task.checkCancellation()
+        guard try signature(source) == stamp else { throw readError() }
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        try manager.createDirectory(at: folder, withIntermediateDirectories: true)
+        try encoder.encode(CacheEntry(signature: stamp, overview: overview)).write(to: index, options: .atomic)
+        return overview
+    }
+
     // Sum discrete microphone inputs explicitly, including channels labelled as surround/LFE.
     // A single gain for the whole file prevents clipping without changing relative channel levels.
-    static func prepare(source: URL, destination: URL) throws -> PlaybackOverview {
+    static func analyze(source: URL) throws -> PlaybackOverview {
         let input = try AVAudioFile(forReading: source)
         let format = input.processingFormat
         let channels = Int(format.channelCount)
@@ -45,10 +90,21 @@ nonisolated enum PlaybackRender {
             position += Int64(buffer.frameLength)
         }
         let gain: Float = mixPeak > 0.98 ? 0.98 / mixPeak : 1
+        return PlaybackOverview(waveforms: waveforms, channelPeaks: peaks, duration: Double(length) / format.sampleRate, sampleRate: format.sampleRate, mixGain: gain)
+    }
+
+    // File rendering is reserved for explicit export.
+    static func prepare(source: URL, destination: URL) throws -> PlaybackOverview {
+        let overview = try analyze(source: source)
+        let reader = try AVAudioFile(forReading: source)
+        let format = reader.processingFormat
+        let channels = Int(format.channelCount)
+        let length = reader.length
+        let gain = overview.mixGain
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8192)!
         let monoFormat = AVAudioFormat(standardFormatWithSampleRate: format.sampleRate, channels: 1)!
         let output = try AVAudioFile(forWriting: destination, settings: monoFormat.settings)
         let mono = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: 8192)!
-        let reader = try AVAudioFile(forReading: source)
         var remaining = length
         while remaining > 0 {
             try Task.checkCancellation()
@@ -66,7 +122,7 @@ nonisolated enum PlaybackRender {
             try output.write(from: mono)
             remaining -= Int64(buffer.frameLength)
         }
-        return PlaybackOverview(waveforms: waveforms, channelPeaks: peaks, duration: Double(length) / format.sampleRate, sampleRate: format.sampleRate, mixGain: gain)
+        return overview
     }
 
     private static func readError() -> NSError {

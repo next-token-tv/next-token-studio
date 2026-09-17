@@ -6,14 +6,14 @@
 
 - 左侧录音资料库，右侧多轨工作区；选中录音后显示各路完整波形、统一时间刻度和同步播放游标。
 - 启动录音或主播匹配时自动选择通道数最多的多路输入；没有多路设备时选择系统默认麦克风。通道数并列时优先上次使用的设备，其次系统默认设备；自动选择排除 BlackHole（包括系统默认或上次使用的 BlackHole）及音频引擎创建的临时聚集设备；BlackHole 仍保留在手动选择列表。显示实际输入通道数。每路独立显示最近 8 秒波形（10 ms 峰值粒度，−60 至 0 dBFS 对数显示）、通道来源和 dBFS 峰值；支持暂停、继续与停止保存。输入设备断开或配置改变时停止并保存。
-- CAF 无损录音保留设备原始采样率和全部输入通道，通道名称保存在同名 JSON 旁文件中；兼容已有 M4A 录音。回放自动混合全部通道，总峰值过高时统一衰减以防削波，原始录音保持不变。
+- WAV（32-bit float）无损录音保留设备原始采样率和全部输入通道，通道名称保存在同名 JSON 旁文件中；兼容已有 CAF 和 M4A 录音。回放直接分块读取原始文件，实时混合全部通道，不生成混音文件，总峰值过高时统一衰减以防削波，原始录音保持不变。
 - 播放器支持播放、暂停、回到开头、进度拖动及点击任意轨道波形定位；空格键控制播放与暂停。
 - 导出分轨 WAV：每个输入通道生成一个单声道 32-bit float WAV，保留原始采样率、完整时长与静音段；文件名为 `host-ch01.wav` 等，并附带 `channels.json` 通道来源表，适用于 NextToken 的分轨转写与后期流程。
 - 导出混音 M4A：全部通道按回放规则混合，输出 AAC-LC、48 kHz、双声道，目标码率 320 kbps。此导出不包含片头片尾编辑或响度母带处理。导出在后台执行，可取消；默认保存到工作文件夹的 `exports/`，完成后可在 Finder 中定位。
 - 支持工具栏删除、右键「移到废纸篓」和 ⌘⌫。音频与通道信息一起移到废纸篓，删除正在回放的录音会先停止播放；录音期间不可删除。
 - 首次录音请求麦克风授权。工作文件夹为 `~/Documents/Next Token Studio`，首次通过系统文件夹选择器授权，后续以安全作用域书签恢复访问。旧沙盒中的录音及通道资料迁移至 `recordings/`，同名冲突不会覆盖。
 
-分轨文件保留共同的录音时间起点。通道编号不代表说话人身份，后期需确认通道与人物的对应关系。内部录音仍保存为多通道 CAF，导出不会修改原始录音。
+分轨文件保留共同的录音时间起点。通道编号不代表说话人身份，后期需确认通道与人物的对应关系。新录音保存为多通道 WAV；每段音频数据达到 3.9 GB 时自动续写下一段（`.part-002.wav` 等），各段独立显示在资料库中，导出不会修改原始录音。
 
 ## 工作文件夹与主播
 
@@ -21,7 +21,7 @@
 - `hosts/hosts.json`：主播实体，字段为稳定唯一的 `id`、`name`、相对于 `hosts/` 的 `avatar` 路径；默认包含杨攀、歸藏、橘子、向阳乔木。
 - `hosts/avatars/`：本地头像。默认图片来自 NextToken 网站人物库。
 - `exports/`：WAV 分轨与 M4A 混音输出，使用唯一文件名。
-- `cache/`：回放和编码中间音频，正常完成或取消后清理。
+- `cache/`：持久保存每路最多 1600 个峰值的只读波形，重复打开和重启后直接复用；源文件大小或修改时间变化、缓存损坏时重建，删除录音时清理对应缓存。缓存可删除并自动重建。M4A 编码临时文件在完成或取消后清理。
 
 主播资料直接编辑 JSON，App 不提供添加和编辑表单。回到前台或点击刷新时重新读取；无效 JSON、重复 ID、缺失或无效头像会显示错误并保留上次成功加载的名单。初始化不覆盖已有资料。主播列表提供「匹配麦克风」入口，打开后使用系统中文语音识别匹配自我介绍；各位依次对自己的麦克风说「我是姓名」并停顿。每路显示电平、识别文字和主播选择，可手工调整，保存后用于新录音的通道名称与主播 ID 标注。匹配不在每次开始录音前弹出，也不影响未匹配时直接录音。
 
@@ -62,6 +62,8 @@ xcodebuild -project next-token-studio.xcodeproj -scheme next-token-studio -confi
 ```sh
 swiftc next-token-studio/AudioCapture.swift Tests/AudioCaptureChecks.swift -o /tmp/next-token-audio-checks
 /tmp/next-token-audio-checks
+swiftc next-token-studio/StreamingPlayback.swift Tests/StreamingPlaybackChecks.swift -o /tmp/next-token-stream-checks
+/tmp/next-token-stream-checks
 swiftc next-token-studio/PlaybackRender.swift Tests/PlaybackRenderChecks.swift -o /tmp/next-token-playback-checks
 /tmp/next-token-playback-checks
 swiftc next-token-studio/RecordingTrash.swift Tests/RecordingTrashChecks.swift -o /tmp/next-token-trash-checks
