@@ -82,12 +82,15 @@ nonisolated struct CaptureSnapshot {
 
 // The tap and UI share only this locked state. Preserve every input channel without a downmix.
 nonisolated final class CaptureWriter: @unchecked Sendable {
+    static let waveformCapacity = 800
     private let lock = NSLock()
     private var file: AVAudioFile?
     private let format: AVAudioFormat
     private var paused = false
     private var frames: Int64 = 0
     private var histories: [[Float]]
+    private var historyCursor = 0
+    private var historyCount = 0
     private var peaks: [Float]
     private var latestPeaks: [Float]
     private var binFrames = 0
@@ -100,10 +103,10 @@ nonisolated final class CaptureWriter: @unchecked Sendable {
             throw NSError(domain: "AudioStudio", code: 3, userInfo: [NSLocalizedDescriptionKey: "此输入设备的音频格式不受支持。"])
         }
         format = inputFormat
-        histories = Array(repeating: [], count: Int(format.channelCount))
+        histories = Array(repeating: Array(repeating: 0, count: Self.waveformCapacity), count: Int(format.channelCount))
         peaks = Array(repeating: 0, count: Int(format.channelCount))
         latestPeaks = peaks
-        binLength = max(1, Int(format.sampleRate * 0.04))
+        binLength = max(1, Int(format.sampleRate * 0.01))
         var settings = format.settings
         settings[AVLinearPCMIsNonInterleaved] = false
         file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
@@ -130,10 +133,11 @@ nonisolated final class CaptureWriter: @unchecked Sendable {
             if binFrames >= binLength {
                 latestPeaks = peaks
                 for channel in peaks.indices {
-                    histories[channel].append(peaks[channel])
-                    if histories[channel].count > 200 { histories[channel].removeFirst(histories[channel].count - 200) }
+                    histories[channel][historyCursor] = peaks[channel]
                     peaks[channel] = 0
                 }
+                historyCursor = (historyCursor + 1) % Self.waveformCapacity
+                historyCount = min(historyCount + 1, Self.waveformCapacity)
                 binFrames = 0
             }
         }
@@ -143,7 +147,12 @@ nonisolated final class CaptureWriter: @unchecked Sendable {
     func snapshot() -> CaptureSnapshot {
         lock.lock()
         defer { lock.unlock() }
-        return CaptureSnapshot(elapsed: Double(frames) / format.sampleRate, waveforms: histories, peaks: latestPeaks, failure: failure, lastBufferAt: lastBufferAt)
+        let ordered = histories.map { history in
+            historyCount < Self.waveformCapacity
+                ? Array(history.prefix(historyCount))
+                : Array(history[historyCursor...]) + Array(history[..<historyCursor])
+        }
+        return CaptureSnapshot(elapsed: Double(frames) / format.sampleRate, waveforms: ordered, peaks: latestPeaks, failure: failure, lastBufferAt: lastBufferAt)
     }
     func close() { lock.lock(); file = nil; lock.unlock() }
 }

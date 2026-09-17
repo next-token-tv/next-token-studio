@@ -3,6 +3,34 @@ import AVFoundation
 @main
 struct AudioCaptureChecks {
     static func main() throws {
+        // Alternating 10 ms pulses must remain distinct across callback boundaries and ring wrap.
+        for rate in [44_100.0, 48_000.0] {
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".caf")
+            defer { try? FileManager.default.removeItem(at: url) }
+            let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1)!
+            let writer = try CaptureWriter(url: url, inputFormat: format)
+            let bin = Int(rate * 0.01)
+            let total = bin * 825
+            var offset = 0
+            while offset < total {
+                let count = min(1024, total - offset)
+                let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
+                buffer.frameLength = AVAudioFrameCount(count)
+                for i in 0..<count {
+                    buffer.floatChannelData![0][i] = (offset + i) / bin % 2 == 0 ? 0.1 : 0.01
+                }
+                writer.append(buffer)
+                offset += count
+            }
+            let waveform = writer.snapshot().waveforms[0]
+            precondition(waveform.count == 800)
+            for i in waveform.indices {
+                let expected: Float = (i + 25) % 2 == 0 ? 0.1 : 0.01
+                precondition(waveform[i] == expected, "10 ms detail and chronological order must survive ring wrap")
+            }
+            writer.close()
+            print("PASS: 10 ms detail and ring wrap @ \(Int(rate)) Hz")
+        }
         for channelCount in [1, 4, 5] {
             for rate in [44_100.0, 48_000.0] {
                 let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("caf")
@@ -22,7 +50,7 @@ struct AudioCaptureChecks {
                 precondition(before.failure == nil)
                 precondition(before.waveforms.count == channelCount)
                 for channel in 0..<channelCount {
-                    precondition(before.waveforms[channel].count == 200)
+                    precondition(before.waveforms[channel].count == 800)
                     precondition(before.waveforms[channel].allSatisfy { abs($0 - abs(values[channel])) < 0.000001 })
                 }
                 writer.setPaused(true)

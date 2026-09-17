@@ -67,7 +67,7 @@ struct TrackWorkspace: View {
                         HStack {
                             Text(isPlayback ? "各路波形与播放位置同步" : "最近 8 秒")
                             Spacer()
-                            Text("波形显示 −60 至 0 dBFS")
+                            Text("对数波形 · −60 至 0 dBFS")
                         }.font(.caption2).foregroundStyle(.secondary).padding(.top, 14)
                     }.padding(.horizontal, 24).padding(.top, 12).padding(.bottom, 16)
                 }
@@ -118,8 +118,8 @@ private struct TrackWaveform: View {
             baseline.move(to: CGPoint(x: 0, y: center))
             baseline.addLine(to: CGPoint(x: size.width, y: center))
             context.stroke(baseline, with: .color(color.opacity(0.22)), lineWidth: 1)
-            let slots = live ? 200 : max(1, samples.count)
-            let columns = min(slots, max(1, Int(size.width / 2)))
+            let slots = live ? CaptureWriter.waveformCapacity : max(1, samples.count)
+            let columns = min(slots, max(1, Int(size.width)))
             let step = size.width / CGFloat(columns)
             var played = Path()
             var remaining = Path()
@@ -128,7 +128,7 @@ private struct TrackWaveform: View {
                 let to = max(from + 1, (column + 1) * slots / columns)
                 var peak: Float = 0
                 for slot in from..<min(to, slots) {
-                    let index = live ? slot - (200 - samples.count) : slot
+                    let index = live ? slot - (CaptureWriter.waveformCapacity - samples.count) : slot
                     if samples.indices.contains(index) { peak = max(peak, samples[index]) }
                 }
                 guard peak > 0.000001 else { continue }
