@@ -2,7 +2,6 @@ import SwiftUI
 
 @main
 struct NextTokenStudioApp: App {
-    @NSApplicationDelegateAdaptor(StudioAppDelegate.self) private var appDelegate
     @State private var studio = AudioStudio()
 
     var body: some Scene {
@@ -24,17 +23,6 @@ struct NextTokenStudioApp: App {
                     .keyboardShortcut(".", modifiers: [.command])
                     .disabled(!studio.isRecording)
             }
-        }
-    }
-}
-
-@MainActor
-final class StudioAppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        // Explicitly refresh the running Dock icon when replacing a development build in place.
-        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
-           let icon = NSImage(contentsOf: url) {
-            NSApplication.shared.applicationIconImage = icon
         }
     }
 }
