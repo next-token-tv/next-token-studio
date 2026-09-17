@@ -21,6 +21,7 @@ struct Recording: Identifiable, Hashable {
 
 @MainActor @Observable
 final class AudioStudio: NSObject, AVAudioPlayerDelegate {
+    let workspace = StudioWorkspace()
     var recordings: [Recording] = []
     var selectedID: URL?
     var isRecording = false
@@ -76,17 +77,21 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
         return String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
     }
     private var directory: URL {
-        get throws {
-            let root = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            let folder = root.appendingPathComponent("NextTokenStudio/Recordings", isDirectory: true)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            return folder
-        }
+        get throws { try workspace.folder("recordings") }
+    }
+
+    func openWorkspace() async {
+        await workspace.choose()
+        if workspace.root != nil { reload() }
+    }
+
+    func restoreWorkspace() async {
+        await workspace.restore()
+        if workspace.root != nil { reload() }
     }
 
     override init() {
         super.init()
-        reload()
         refreshInputs()
         deviceTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refreshInputs() }
@@ -107,6 +112,7 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
     }
 
     func reload() {
+        guard workspace.root != nil else { return }
         do {
             recordings = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.creationDateKey])
                 .filter { ["m4a", "caf"].contains($0.pathExtension) }
@@ -119,7 +125,7 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
     }
 
     func startRecording() async {
-        guard !isBusy else { return }
+        guard !isBusy, workspace.root != nil else { return }
         isRequestingPermission = true
         defer { isRequestingPermission = false }
         let allowed = await AVCaptureDevice.requestAccess(for: .audio)
@@ -267,8 +273,10 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
         playbackChannelNames = recording.metadata?.channelNames ?? []
         previewTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            let output = FileManager.default.temporaryDirectory.appendingPathComponent("mix-\(UUID().uuidString).caf")
+            var pendingOutput: URL?
             do {
+                let output = try workspace.folder("cache").appendingPathComponent("mix-\(UUID().uuidString).caf")
+                pendingOutput = output
                 let render = Task.detached { try PlaybackRender.prepare(source: recording.url, destination: output) }
                 let overview = try await withTaskCancellationHandler(operation: { try await render.value }, onCancel: { render.cancel() })
                 try Task.checkCancellation()
@@ -298,7 +306,7 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
                     }
                 }
             } catch {
-                try? FileManager.default.removeItem(at: output)
+                if let pendingOutput { try? FileManager.default.removeItem(at: pendingOutput) }
                 guard generation == previewGeneration else { return }
                 stopPlayback()
                 selectedID = nil
@@ -367,33 +375,21 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
     }
 
     func exportWAV(_ recording: Recording) {
-        guard !isBusy, !isExporting else { return }
-        let panel = NSOpenPanel()
-        panel.title = "导出分轨 WAV"
-        panel.message = "每路导出一份单声道 WAV，保留完整时长、原始采样率和通道对应信息。"
-        panel.prompt = "导出到此文件夹"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.begin { response in
-            guard response == .OK, let parent = panel.url else { return }
-            let folder = parent.appendingPathComponent("\(self.exportBaseName(recording))-\(UUID().uuidString.prefix(6).lowercased())-tracks", isDirectory: true)
-            self.runExport(recording, destination: folder, access: parent, split: true)
-        }
+        exportToWorkspace(recording, split: true)
     }
 
     func exportM4A(_ recording: Recording) {
+        exportToWorkspace(recording, split: false)
+    }
+
+    private func exportToWorkspace(_ recording: Recording, split: Bool) {
         guard !isBusy, !isExporting else { return }
-        let panel = NSSavePanel()
-        panel.title = "导出混音 M4A"
-        panel.message = "全部通道混合输出，AAC-LC / 48 kHz / 立体声 / 320 kbps。"
-        panel.allowedContentTypes = [.mpeg4Audio]
-        panel.nameFieldStringValue = exportBaseName(recording) + ".m4a"
-        panel.begin { response in
-            guard response == .OK, let destination = panel.url else { return }
-            self.runExport(recording, destination: destination, access: destination, split: false)
-        }
+        do {
+            let parent = try workspace.folder("exports")
+            let name = "\(exportBaseName(recording))-\(UUID().uuidString.prefix(6).lowercased())"
+            let destination = parent.appendingPathComponent(split ? name + "-tracks" : name + ".m4a")
+            runExport(recording, destination: destination, access: parent, split: split)
+        } catch { errorMessage = error.localizedDescription }
     }
 
     private func runExport(_ recording: Recording, destination: URL, access: URL, split: Bool) {
@@ -412,9 +408,10 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
                 if scoped { access.stopAccessingSecurityScopedResource() }
             }
             do {
+                let cache = try workspace.folder("cache")
                 let work = Task.detached {
                     if split { try AudioExport.splitWAV(source: source, names: names, destination: destination) }
-                    else { try AudioExport.mixedM4A(source: source, destination: destination, replaceExisting: true) }
+                    else { try AudioExport.mixedM4A(source: source, destination: destination, replaceExisting: false, temporaryDirectory: cache) }
                 }
                 try await withTaskCancellationHandler(operation: { try await work.value }, onCancel: { work.cancel() })
                 lastExportURL = destination

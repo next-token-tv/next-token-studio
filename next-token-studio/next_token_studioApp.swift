@@ -15,7 +15,7 @@ struct NextTokenStudioApp: App {
             CommandMenu("录音") {
                 Button("开始录音") { Task { await studio.startRecording() } }
                     .keyboardShortcut("r", modifiers: [.command])
-                    .disabled(studio.isBusy)
+                    .disabled(studio.isBusy || studio.workspace.root == nil)
                 Button(studio.isPaused ? "继续录音" : "暂停录音") { studio.togglePause() }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
                     .disabled(!studio.isRecording)

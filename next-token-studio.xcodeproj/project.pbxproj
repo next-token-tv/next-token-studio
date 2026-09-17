@@ -13,6 +13,7 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		9CC0515E305998F400437028 /* next-token-studio */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFolders = (WorkspaceSeed,);
 			path = "next-token-studio";
 			sourceTree = "<group>";
 		};
@@ -256,6 +257,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = YES;
+				CODE_SIGN_ENTITLEMENTS = "next-token-studio/Studio.entitlements";
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -293,6 +295,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = YES;
+				CODE_SIGN_ENTITLEMENTS = "next-token-studio/Studio.entitlements";
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;

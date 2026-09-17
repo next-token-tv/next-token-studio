@@ -9,11 +9,23 @@
 - CAF 无损录音保留设备原始采样率和全部输入通道，通道名称保存在同名 JSON 旁文件中；兼容已有 M4A 录音。回放自动混合全部通道，总峰值过高时统一衰减以防削波，原始录音保持不变。
 - 播放器支持播放、暂停、回到开头、进度拖动及点击任意轨道波形定位；空格键控制播放与暂停。
 - 导出分轨 WAV：每个输入通道生成一个单声道 32-bit float WAV，保留原始采样率、完整时长与静音段；文件名为 `host-ch01.wav` 等，并附带 `channels.json` 通道来源表，适用于 NextToken 的分轨转写与后期流程。
-- 导出混音 M4A：全部通道按回放规则混合，输出 AAC-LC、48 kHz、双声道，目标码率 320 kbps。此导出不包含片头片尾编辑或响度母带处理。导出在后台执行，可取消；完成后可在 Finder 中定位。
+- 导出混音 M4A：全部通道按回放规则混合，输出 AAC-LC、48 kHz、双声道，目标码率 320 kbps。此导出不包含片头片尾编辑或响度母带处理。导出在后台执行，可取消；默认保存到工作文件夹的 `exports/`，完成后可在 Finder 中定位。
 - 支持工具栏删除、右键「移到废纸篓」和 ⌘⌫。音频与通道信息一起移到废纸篓，删除正在回放的录音会先停止播放；录音期间不可删除。
-- 首次录音请求麦克风授权。录音保存在应用沙盒的 Application Support/NextTokenStudio/Recordings 中。
+- 首次录音请求麦克风授权。工作文件夹为 `~/Documents/Next Token Studio`，首次通过系统文件夹选择器授权，后续以安全作用域书签恢复访问。旧沙盒中的录音及通道资料迁移至 `recordings/`，同名冲突不会覆盖。
 
 分轨文件保留共同的录音时间起点。通道编号不代表说话人身份，后期需确认通道与人物的对应关系。内部录音仍保存为多通道 CAF，导出不会修改原始录音。
+
+## 工作文件夹与主播
+
+- `recordings/`：原始录音与通道 JSON。
+- `hosts/hosts.json`：主播实体，字段为稳定唯一的 `id`、`name`、相对于 `hosts/` 的 `avatar` 路径；默认包含杨攀、歸藏、橘子、向阳乔木。
+- `hosts/avatars/`：本地头像。默认图片来自 NextToken 网站人物库。
+- `exports/`：WAV 分轨与 M4A 混音输出，使用唯一文件名。
+- `cache/`：回放和编码中间音频，正常完成或取消后清理。
+
+主播资料直接编辑 JSON，App 不提供添加和编辑表单。回到前台或点击刷新时重新读取；无效 JSON、重复 ID、缺失或无效头像会显示错误并保留上次成功加载的名单。初始化不覆盖已有资料。主播当前不自动绑定麦克风，也不自动识别说话人。
+
+录音和主播数据保存在工作文件夹，macOS 授权书签及设备偏好由系统偏好设置管理。Speech 语音识别尚未接入。
 
 ## 开发
 
@@ -40,4 +52,6 @@ swiftc next-token-studio/RecordingTrash.swift Tests/RecordingTrashChecks.swift -
 /tmp/next-token-trash-checks
 swiftc next-token-studio/PlaybackRender.swift next-token-studio/AudioExport.swift Tests/AudioExportChecks.swift -o /tmp/next-token-export-checks
 /tmp/next-token-export-checks
+swiftc next-token-studio/WorkspaceData.swift Tests/WorkspaceChecks.swift -o /tmp/next-token-workspace-checks
+/tmp/next-token-workspace-checks next-token-studio/WorkspaceSeed
 ```

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Bindable var studio: AudioStudio
+    @Environment(\.scenePhase) private var scenePhase
     private var isPlayback: Bool { studio.playingID != nil }
     private var activeRecording: Recording? { studio.recordings.first { $0.id == studio.playingID } }
 
@@ -51,13 +52,54 @@ struct ContentView: View {
                     Text("录制的音频会保存在这里")
                         .font(.caption).foregroundStyle(.secondary).padding()
                 }
-                Spacer(minLength: 0)
-                Label("录音保存在本机", systemImage: "internaldrive")
-                    .font(.caption).foregroundStyle(.secondary).padding(16)
+                if studio.workspace.root != nil {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("主播").font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Button { studio.workspace.reloadHosts() } label: { Image(systemName: "arrow.clockwise") }
+                                .buttonStyle(.plain).help("重新读取主播资料")
+                                .accessibilityLabel("重新读取主播资料")
+                        }
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(studio.workspace.hosts) { host in
+                                    HStack(spacing: 10) {
+                                        if let image = studio.workspace.avatars[host.id] {
+                                            Image(nsImage: image).resizable().scaledToFill()
+                                                .frame(width: 30, height: 30).clipShape(Circle())
+                                                .accessibilityHidden(true)
+                                        }
+                                        Text(host.name).font(.callout)
+                                    }
+                                }
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.frame(maxHeight: 170)
+                        if let error = studio.workspace.hostError {
+                            Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                        }
+                    }.padding(14)
+                    Button { studio.workspace.reveal() } label: {
+                        Label("打开工作文件夹", systemImage: "folder")
+                    }.buttonStyle(.plain).font(.caption).padding(14)
+                }
             }
             .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 320)
         } detail: {
             VStack(spacing: 0) {
+                if studio.workspace.root == nil {
+                    ContentUnavailableView {
+                        Label("打开工作文件夹", systemImage: "folder")
+                    } description: {
+                        Text("录音、主播资料和导出保存在 Documents/Next Token Studio。")
+                    } actions: {
+                        Button(studio.workspace.isConnecting ? "正在准备…" : "选择工作文件夹") {
+                            Task { await studio.openWorkspace() }
+                        }.disabled(studio.workspace.isConnecting)
+                        if let error = studio.workspace.error { Text(error).font(.caption).foregroundStyle(.red) }
+                    }
+                } else {
                 workspaceHeader
                 Divider()
                 if studio.isPreparingPlayback {
@@ -98,6 +140,7 @@ struct ContentView: View {
                         }
                     }.padding(.horizontal, 24).padding(.vertical, 10).background(.bar)
                 }
+                }
             }
             .background(Color(nsColor: .windowBackgroundColor))
             .navigationTitle("Next Token Studio")
@@ -122,6 +165,10 @@ struct ContentView: View {
                     .disabled(studio.selected == nil || studio.isBusy || studio.isExporting)
                 }
             }
+        }
+        .task { await studio.restoreWorkspace() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { studio.workspace.reloadHosts() }
         }
         .onChange(of: studio.selectedID) { _, selection in
             if let recording = studio.recordings.first(where: { $0.id == selection }) {

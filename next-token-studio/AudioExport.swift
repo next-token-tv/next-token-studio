@@ -67,13 +67,13 @@ nonisolated enum AudioExport {
         return Manifest(sourceFile: source.lastPathComponent, sourceTimeline: "recording", sampleRate: format.sampleRate, frames: length, channels: channels)
     }
 
-    static func mixedM4A(source: URL, destination: URL, replaceExisting: Bool = false) throws {
+    static func mixedM4A(source: URL, destination: URL, replaceExisting: Bool = false, temporaryDirectory: URL = FileManager.default.temporaryDirectory) throws {
         let manager = FileManager.default
         guard source.resolvingSymlinksInPath().standardizedFileURL != destination.resolvingSymlinksInPath().standardizedFileURL else {
             throw failure("导出文件不能覆盖原始录音。")
         }
         guard replaceExisting || !manager.fileExists(atPath: destination.path) else { throw failure("目标文件已存在，请选择一个新名称。") }
-        let workspace = manager.temporaryDirectory.appendingPathComponent("m4a-export-\(UUID().uuidString)", isDirectory: true)
+        let workspace = temporaryDirectory.appendingPathComponent("m4a-export-\(UUID().uuidString)", isDirectory: true)
         try manager.createDirectory(at: workspace, withIntermediateDirectories: false)
         defer { try? manager.removeItem(at: workspace) }
         let mixed = workspace.appendingPathComponent("mix.caf")

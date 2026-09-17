@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "hosts": [
+    {
+      "id": "yangpan",
+      "name": "杨攀",
+      "avatar": "avatars/yangpan.png"
+    },
+    {
+      "id": "guizang",
+      "name": "歸藏",
+      "avatar": "avatars/guizang.png"
+    },
+    {
+      "id": "orange",
+      "name": "橘子",
+      "avatar": "avatars/orange.png"
+    },
+    {
+      "id": "xiangyang-qiaomu",
+      "name": "向阳乔木",
+      "avatar": "avatars/xiangyang-qiaomu.png"
+    }
+  ]
+}
