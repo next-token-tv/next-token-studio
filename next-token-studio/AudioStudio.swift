@@ -82,7 +82,9 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
         }
     }
     func beginMatching() {
-        guard !isBusy, !isExporting, selectedInput != nil, workspace.root != nil else { return }
+        guard !isBusy, !isExporting, workspace.root != nil else { return }
+        selectPreferredInput()
+        guard selectedInput != nil else { errorMessage = "没有可用的音频输入设备。"; return }
         workspace.reloadHosts()
         stopPlayback()
         selectedID = nil
@@ -122,10 +124,18 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
                 stopRecording()
                 errorMessage = "输入设备已断开，已有录音已保存。请选择输入设备后重新录音。"
             }
-            let savedUID = UserDefaults.standard.string(forKey: "selectedInputUID")
-            let defaultID = AudioInputs.defaultID()
-            selectedInputID = inputDevices.first(where: { $0.uid == savedUID })?.id ?? inputDevices.first(where: { $0.id == defaultID })?.id ?? inputDevices.first?.id ?? 0
+            choosePreferredInput()
         }
+    }
+
+    private func choosePreferredInput() {
+        selectedInputID = AudioInputs.preferredDevice(in: inputDevices, defaultID: AudioInputs.defaultID(),
+            preferredUID: UserDefaults.standard.string(forKey: "selectedInputUID"))?.id ?? 0
+    }
+
+    private func selectPreferredInput() {
+        inputDevices = AudioInputs.available()
+        choosePreferredInput()
     }
 
     func reload() {
@@ -157,7 +167,7 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
             formatter.dateFormat = "yyyy-MM-dd HH-mm-ss"
             let name = "录音 \(formatter.string(from: Date()))-\(UUID().uuidString.prefix(4))"
             let url = try directory.appendingPathComponent(name).appendingPathExtension("caf")
-            refreshInputs()
+            selectPreferredInput()
             guard let device = selectedInput else { throw NSError(domain: "AudioStudio", code: 1, userInfo: [NSLocalizedDescriptionKey: "没有可用的音频输入设备。"] ) }
             let engine = AVAudioEngine()
             let input = engine.inputNode

@@ -63,6 +63,19 @@ enum AudioInputs {
         }
     }
 
+    static func preferredDevice(in devices: [InputDevice], defaultID: AudioDeviceID, preferredUID: String?) -> InputDevice? {
+        // Core Audio creates temporary aggregates for running engines; these aren't user inputs.
+        let candidates = devices.filter { $0.channelCount > 0 && !$0.name.hasPrefix("CADefaultDeviceAggregate-") && !$0.uid.hasPrefix("CADefaultDeviceAggregate-") }
+        let maximum = candidates.map(\.channelCount).max() ?? 0
+        guard maximum > 1 else {
+            return candidates.first { $0.id == defaultID } ?? candidates.sorted { $0.uid < $1.uid }.first
+        }
+        let largest = candidates.filter { $0.channelCount == maximum }
+        return largest.first { $0.uid == preferredUID }
+            ?? largest.first { $0.id == defaultID }
+            ?? largest.sorted { $0.uid < $1.uid }.first
+    }
+
     static func captureFormat(input: AVAudioInputNode, device: InputDevice) throws -> AVAudioFormat {
         // Switching the AU device can leave the node's output format cached from the default device.
         // The input scope reflects hardware; explicitly apply matching channels/rate to the tap.
