@@ -23,9 +23,17 @@
 - `exports/`：WAV 分轨与 M4A 混音输出，使用唯一文件名。
 - `cache/`：回放和编码中间音频，正常完成或取消后清理。
 
-主播资料直接编辑 JSON，App 不提供添加和编辑表单。回到前台或点击刷新时重新读取；无效 JSON、重复 ID、缺失或无效头像会显示错误并保留上次成功加载的名单。初始化不覆盖已有资料。主播当前不自动绑定麦克风，也不自动识别说话人。
+主播资料直接编辑 JSON，App 不提供添加和编辑表单。回到前台或点击刷新时重新读取；无效 JSON、重复 ID、缺失或无效头像会显示错误并保留上次成功加载的名单。初始化不覆盖已有资料。主播列表提供「匹配麦克风」入口，打开后使用系统中文语音识别匹配自我介绍；各位依次对自己的麦克风说「我是姓名」并停顿。每路显示电平、识别文字和主播选择，可手工调整，保存后用于新录音的通道名称与主播 ID 标注。匹配不在每次开始录音前弹出，也不影响未匹配时直接录音。
 
-录音和主播数据保存在工作文件夹，macOS 授权书签及设备偏好由系统偏好设置管理。Speech 语音识别尚未接入。
+录音和主播数据保存在工作文件夹，macOS 授权书签及设备偏好由系统偏好设置管理。语音识别使用 macOS Speech 框架（zh-CN），在线或设备端由系统决定，首次使用遵循系统权限提示。匹配只在该界面开启，不对正式录音后台转写，不保存匹配音频或识别文字。
+
+### 麦克风绑定
+
+`hosts/microphones.json` 保存每个设备 UID、通道名称顺序及通道到主播 ID 的对应关系。通道索引从 0 开始。设备 UID、通道数量或名称顺序变化时不沿用旧绑定；已删除主播的绑定不再使用。修改同一设备保留其他设备的配置，保存采用原子写入。
+
+每位主播可在 `hosts.json` 中添加可选的 `aliases` 字符串数组，例如向阳乔木的 `["乔木"]`。系统识别结合姓名和自我介绍提示词，支持繁简转换；仅提及别人、同时出现多个姓名或多路串音接近时不自动绑定。当前是自我介绍匹配，不是声纹识别。系统误识别的名字可重说或手工选择。
+
+同一主播最多绑定一路；手工改选会将主播移到新通道。手工选择（包括未绑定）以及已保存的绑定不会被自动识别覆盖；单路重新识别按钮解除保护。取消丢弃本次更改，保存后生效。匹配界面关闭会释放麦克风，正式录制与匹配互斥。音频片段最长 8 秒，识别串行处理，待处理队列最多 2 段。
 
 ## 开发
 
@@ -54,4 +62,6 @@ swiftc next-token-studio/PlaybackRender.swift next-token-studio/AudioExport.swif
 /tmp/next-token-export-checks
 swiftc next-token-studio/WorkspaceData.swift Tests/WorkspaceChecks.swift -o /tmp/next-token-workspace-checks
 /tmp/next-token-workspace-checks next-token-studio/WorkspaceSeed
+swiftc next-token-studio/WorkspaceData.swift next-token-studio/HostBinding.swift next-token-studio/MatchingAudio.swift Tests/HostMatchingChecks.swift -o /tmp/next-token-host-checks
+/tmp/next-token-host-checks
 ```

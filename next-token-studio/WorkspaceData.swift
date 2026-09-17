@@ -4,6 +4,7 @@ nonisolated struct StudioHost: Codable, Identifiable, Equatable {
     let id: String
     let name: String
     let avatar: String
+    var aliases: [String]? = nil
 }
 
 nonisolated struct HostCatalog: Codable {

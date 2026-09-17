@@ -9,7 +9,10 @@
     {
       "id": "guizang",
       "name": "歸藏",
-      "avatar": "avatars/guizang.png"
+      "avatar": "avatars/guizang.png",
+      "aliases": [
+        "归藏"
+      ]
     },
     {
       "id": "orange",
@@ -19,7 +22,10 @@
     {
       "id": "xiangyang-qiaomu",
       "name": "向阳乔木",
-      "avatar": "avatars/xiangyang-qiaomu.png"
+      "avatar": "avatars/xiangyang-qiaomu.png",
+      "aliases": [
+        "乔木"
+      ]
     }
   ]
 }

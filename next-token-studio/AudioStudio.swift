@@ -9,6 +9,8 @@ nonisolated struct RecordingMetadata: Codable, Hashable {
     let inputName: String
     let channelNames: [String]
     let sampleRate: Double
+    var hostIDs: [String?]? = nil
+    var inputChannelNames: [String]? = nil
 }
 
 struct Recording: Identifiable, Hashable {
@@ -24,6 +26,7 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
     let workspace = StudioWorkspace()
     var recordings: [Recording] = []
     var selectedID: URL?
+    var isMatching = false
     var isRecording = false
     var isPaused = false
     var isRequestingPermission = false
@@ -68,9 +71,23 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
     private var player: AVAudioPlayer?
     private var timer: Timer?
 
-    var isBusy: Bool { isRecording || isRequestingPermission }
+    var isBusy: Bool { isRecording || isRequestingPermission || isMatching }
     var selectedInput: InputDevice? { inputDevices.first { $0.id == selectedInputID } }
-    var displayedChannelNames: [String] { selectedInput?.channelNames ?? [] }
+    var displayedChannelNames: [String] { selectedInput.map { channelLabels(for: $0) } ?? [] }
+    private func channelLabels(for device: InputDevice) -> [String] {
+        let ids = workspace.hostIDs(for: device)
+        return device.channelNames.enumerated().map { index, name in
+            guard let id = ids[index], let host = workspace.hosts.first(where: { $0.id == id }) else { return name }
+            return "\(host.name) · \(name)"
+        }
+    }
+    func beginMatching() {
+        guard !isBusy, !isExporting, selectedInput != nil, workspace.root != nil else { return }
+        workspace.reloadHosts()
+        stopPlayback()
+        selectedID = nil
+        isMatching = true
+    }
     var selected: Recording? { recordings.first { $0.id == selectedID } }
     var clock: String {
         let seconds = Int(elapsed)
@@ -146,7 +163,7 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
             let input = engine.inputNode
             try input.auAudioUnit.setDeviceID(device.id)
             guard input.auAudioUnit.deviceID == device.id else { throw NSError(domain: "AudioStudio", code: 1, userInfo: [NSLocalizedDescriptionKey: "音频引擎未能连接所选设备。"] ) }
-            let format = input.outputFormat(forBus: 0)
+            let format = try AudioInputs.captureFormat(input: input, device: device)
             guard format.sampleRate > 0, Int(format.channelCount) == device.channelCount else {
                 throw NSError(domain: "AudioStudio", code: 1, userInfo: [NSLocalizedDescriptionKey: "设备提供 \(device.channelCount) 路输入，但音频引擎只打开了 \(format.channelCount) 路。请检查音频 MIDI 设置后重试。"])
             }
@@ -168,7 +185,7 @@ final class AudioStudio: NSObject, AVAudioPlayerDelegate {
             channelPeaks = Array(repeating: 0, count: device.channelCount)
             signalStatus = nil
             recordingStartedAt = Date()
-            recordingMetadata = RecordingMetadata(inputName: device.name, channelNames: device.channelNames, sampleRate: format.sampleRate)
+            recordingMetadata = RecordingMetadata(inputName: device.name, channelNames: channelLabels(for: device), sampleRate: format.sampleRate, hostIDs: workspace.hostIDs(for: device), inputChannelNames: device.channelNames)
             configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, self.isRecording, self.engine?.isRunning == false else { return }

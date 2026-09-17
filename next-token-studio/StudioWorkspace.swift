@@ -8,6 +8,8 @@ final class StudioWorkspace {
     private(set) var hosts: [StudioHost] = []
     private(set) var avatars: [String: NSImage] = [:]
     var hostError: String?
+    var bindingError: String?
+    private(set) var microphoneCatalog = MicrophoneCatalog()
     var error: String?
     private(set) var isConnecting = false
     private var access: URL?
@@ -91,7 +93,40 @@ final class StudioWorkspace {
             hosts = loaded
             avatars = images
             hostError = nil
+            reloadBindings()
         } catch { hostError = "主播资料读取失败：\(error.localizedDescription)" }
+    }
+
+    func reloadBindings() {
+        guard let root else { return }
+        do {
+            microphoneCatalog = try MicrophoneCatalog.read(from: root.appendingPathComponent("hosts/microphones.json"))
+            bindingError = nil
+        } catch {
+            microphoneCatalog = MicrophoneCatalog()
+            bindingError = "麦克风绑定读取失败：\(error.localizedDescription)"
+        }
+    }
+
+    func hostIDs(for device: InputDevice) -> [String?] {
+        microphoneCatalog.devices.first { $0.deviceUID == device.uid }?
+            .hostIDs(uid: device.uid, channels: device.channelNames, hosts: hosts)
+            ?? Array(repeating: nil, count: device.channelCount)
+    }
+
+    func saveBindings(_ ids: [String?], for device: InputDevice) throws {
+        guard let root, ids.count == device.channelCount else { throw WorkspaceData.failure("麦克风通道已改变，请重新匹配。") }
+        let known = Set(hosts.map(\.id))
+        let assigned = ids.compactMap { $0 }
+        guard Set(assigned).count == assigned.count, assigned.allSatisfy({ known.contains($0) }) else {
+            throw WorkspaceData.failure("主播资料已改变，或同一主播被分配到多路，请检查绑定。")
+        }
+        let url = root.appendingPathComponent("hosts/microphones.json")
+        var catalog = try MicrophoneCatalog.read(from: url)
+        let assignments = ids.enumerated().compactMap { index, id in id.map { ChannelHostBinding(channel: index, hostID: $0) } }
+        try catalog.save(DeviceHostBindings(deviceUID: device.uid, channelNames: device.channelNames, assignments: assignments), to: url)
+        microphoneCatalog = catalog
+        bindingError = nil
     }
 
     func reveal() { if let root { NSWorkspace.shared.open(root) } }

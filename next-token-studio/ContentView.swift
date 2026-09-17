@@ -62,6 +62,12 @@ struct ContentView: View {
                                 .buttonStyle(.plain).help("重新读取主播资料")
                                 .accessibilityLabel("重新读取主播资料")
                         }
+                        Button { studio.beginMatching() } label: {
+                            Label("匹配麦克风", systemImage: "person.wave.2")
+                        }.disabled(studio.isBusy || studio.isExporting || studio.selectedInput == nil || studio.workspace.hosts.isEmpty)
+                        if let error = studio.workspace.bindingError {
+                            Text(error).font(.caption).foregroundStyle(.orange)
+                        }
                         ScrollView {
                             VStack(alignment: .leading, spacing: 10) {
                                 ForEach(studio.workspace.hosts) { host in
@@ -165,6 +171,9 @@ struct ContentView: View {
                     .disabled(studio.selected == nil || studio.isBusy || studio.isExporting)
                 }
             }
+        }
+        .sheet(isPresented: $studio.isMatching) {
+            if let device = studio.selectedInput { HostMatchingView(studio: studio, device: device) }
         }
         .task { await studio.restoreWorkspace() }
         .onChange(of: scenePhase) { _, phase in

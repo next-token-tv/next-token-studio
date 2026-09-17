@@ -63,6 +63,17 @@ enum AudioInputs {
         }
     }
 
+    static func captureFormat(input: AVAudioInputNode, device: InputDevice) throws -> AVAudioFormat {
+        // Switching the AU device can leave the node's output format cached from the default device.
+        // The input scope reflects hardware; explicitly apply matching channels/rate to the tap.
+        let hardware = input.inputFormat(forBus: 0)
+        guard hardware.sampleRate > 0, Int(hardware.channelCount) == device.channelCount,
+              let layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | hardware.channelCount) else {
+            throw NSError(domain: "AudioStudio", code: 3, userInfo: [NSLocalizedDescriptionKey: "设备通道尚未就绪，请重新选择输入设备。"])
+        }
+        return AVAudioFormat(standardFormatWithSampleRate: hardware.sampleRate, channelLayout: layout)
+    }
+
     static func defaultID() -> AudioDeviceID {
         var id: AudioDeviceID = 0
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)

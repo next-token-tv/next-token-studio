@@ -264,6 +264,7 @@
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_CFBundleDisplayName = "Next Token Studio";
 				INFOPLIST_KEY_CFBundleName = "Next Token Studio";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "用于识别中文自我介绍，将主播匹配到麦克风通道；系统可能使用 Apple 在线语音识别服务。";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Next Token Studio 需要使用麦克风来录制音频，录音仅保存在本机。";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -302,6 +303,7 @@
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_CFBundleDisplayName = "Next Token Studio";
 				INFOPLIST_KEY_CFBundleName = "Next Token Studio";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "用于识别中文自我介绍，将主播匹配到麦克风通道；系统可能使用 Apple 在线语音识别服务。";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Next Token Studio 需要使用麦克风来录制音频，录音仅保存在本机。";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
