@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Bindable var studio: AudioStudio
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     private var isPlayback: Bool { studio.playingID != nil }
     private var activeRecording: Recording? { studio.recordings.first { $0.id == studio.playingID } }
@@ -77,6 +78,7 @@ struct ContentView: View {
                                                 .frame(width: 30, height: 30).clipShape(Circle())
                                                 .accessibilityHidden(true)
                                         }
+                                        Circle().fill(HostPalette.color(host.color, scheme: colorScheme)).frame(width: 7, height: 7)
                                         Text(host.name).font(.callout)
                                     }
                                 }
@@ -118,6 +120,7 @@ struct ContentView: View {
                         names: isPlayback ? studio.playbackChannelNames : studio.displayedChannelNames,
                         waveforms: isPlayback ? studio.playbackWaveforms : studio.waveforms,
                         peaks: isPlayback ? studio.playbackPeaks : studio.channelPeaks,
+                        hostColors: trackHostColors,
                         isPlayback: isPlayback,
                         paused: studio.isPaused,
                         duration: studio.playbackDuration,
@@ -187,6 +190,17 @@ struct ContentView: View {
         .alert("无法完成操作", isPresented: Binding(get: { studio.errorMessage != nil }, set: { if !$0 { studio.errorMessage = nil } })) {
             Button("好") { studio.errorMessage = nil }
         } message: { Text(studio.errorMessage ?? "") }
+    }
+
+    private var trackHostColors: [String?] {
+        let ids: [String?]
+        if isPlayback {
+            // A recording retains its original identities even after the live device is rebound.
+            ids = activeRecording?.metadata?.hostIDs ?? []
+        } else {
+            ids = studio.selectedInput.map { studio.workspace.hostIDs(for: $0) } ?? []
+        }
+        return ids.map { id in studio.workspace.hosts.first { $0.id == id }?.color }
     }
 
     private var workspaceHeader: some View {

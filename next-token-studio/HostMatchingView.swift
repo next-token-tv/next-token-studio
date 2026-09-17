@@ -4,6 +4,7 @@ struct HostMatchingView: View {
     @Bindable var studio: AudioStudio
     @State private var session: HostMatchingSession
     @State private var saveError: String?
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
 
     init(studio: AudioStudio, device: InputDevice) {
@@ -58,16 +59,17 @@ struct HostMatchingView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 14) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("通道 \(channel + 1)").font(.headline)
+                    Text("通道 \(channel + 1)").font(.headline).foregroundStyle(channelColor(channel))
                     Text(session.device.channelNames[channel]).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }.frame(width: 180, alignment: .leading)
                 VStack(spacing: 4) {
-                    ProgressView(value: level(session.peaks[channel])).tint(.green)
+                    ProgressView(value: level(session.peaks[channel])).tint(channelColor(channel))
                     Text(session.peaks[channel] > 0.00001 ? String(format: "%.1f dBFS", 20 * log10(session.peaks[channel])) : "无信号")
                         .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
                 }.frame(width: 90)
                 if let id = session.draft.hostIDs[channel], let image = studio.workspace.avatars[id] {
                     Image(nsImage: image).resizable().scaledToFill().frame(width: 34, height: 34).clipShape(Circle())
+                        .overlay(Circle().stroke(channelColor(channel), lineWidth: 2))
                 } else {
                     Image(systemName: "person.crop.circle.dashed").font(.system(size: 30)).foregroundStyle(.tertiary).frame(width: 34)
                 }
@@ -83,6 +85,11 @@ struct HostMatchingView: View {
             }
             Text(session.notes[channel]).font(.caption).foregroundStyle(.secondary)
         }.padding(14).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func channelColor(_ channel: Int) -> Color {
+        let host = session.hosts.first { $0.id == session.draft.hostIDs[channel] }
+        return HostPalette.color(host?.color, scheme: colorScheme)
     }
 
     private func level(_ peak: Float) -> Double {

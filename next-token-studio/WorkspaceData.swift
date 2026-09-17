@@ -5,6 +5,7 @@ nonisolated struct StudioHost: Codable, Identifiable, Equatable {
     let name: String
     let avatar: String
     var aliases: [String]? = nil
+    var color: String? = nil
 }
 
 nonisolated struct HostCatalog: Codable {
@@ -41,6 +42,9 @@ nonisolated enum WorkspaceData {
             guard !host.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   !host.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   ids.insert(host.id).inserted else { throw failure("主播 ID 和名字不能为空，ID 不能重复。") }
+            if let color = host.color, color.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) == nil {
+                throw failure("\(host.name) 的颜色应使用 #RRGGBB 格式。")
+            }
             let avatar = try avatarURL(host, root: root)
             guard FileManager.default.fileExists(atPath: avatar.path) else { throw failure("找不到 \(host.name) 的头像：\(host.avatar)") }
         }

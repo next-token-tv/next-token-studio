@@ -4,7 +4,8 @@
     {
       "id": "yangpan",
       "name": "杨攀",
-      "avatar": "avatars/yangpan.png"
+      "avatar": "avatars/yangpan.png",
+      "color": "#318FBD"
     },
     {
       "id": "guizang",
@@ -14,12 +15,14 @@
         "归藏",
         "归臧",
         "guizang"
-      ]
+      ],
+      "color": "#A96A00"
     },
     {
       "id": "orange",
       "name": "橘子",
-      "avatar": "avatars/orange.png"
+      "avatar": "avatars/orange.png",
+      "color": "#F06A31"
     },
     {
       "id": "xiangyang-qiaomu",
@@ -27,7 +30,8 @@
       "avatar": "avatars/xiangyang-qiaomu.png",
       "aliases": [
         "乔木"
-      ]
+      ],
+      "color": "#171717"
     }
   ]
 }

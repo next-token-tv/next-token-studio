@@ -4,6 +4,8 @@ struct TrackWorkspace: View {
     let names: [String]
     let waveforms: [[Float]]
     let peaks: [Float]
+    let hostColors: [String?]
+    @Environment(\.colorScheme) private var colorScheme
     let isPlayback: Bool
     let paused: Bool
     let duration: TimeInterval
@@ -37,7 +39,7 @@ struct TrackWorkspace: View {
                                 HStack(spacing: 0) {
                                     channelLabel(index)
                                         .frame(width: labelWidth, alignment: .leading)
-                                    TrackWaveform(samples: waveforms.indices.contains(index) ? waveforms[index] : [], live: !isPlayback, color: colors[index % colors.count], progress: progress)
+                                    TrackWaveform(samples: waveforms.indices.contains(index) ? waveforms[index] : [], live: !isPlayback, color: trackColor(index), progress: progress)
                                         .contentShape(Rectangle())
                                         .gesture(DragGesture(minimumDistance: 0).onChanged { event in
                                             guard isPlayback, duration > 0 else { return }
@@ -75,12 +77,17 @@ struct TrackWorkspace: View {
         }
     }
 
+    private func trackColor(_ index: Int) -> Color {
+        HostPalette.color(hostColors.indices.contains(index) ? hostColors[index] : nil,
+                          scheme: colorScheme, fallback: colors[index % colors.count])
+    }
+
     private func channelLabel(_ index: Int) -> some View {
         HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 2).fill(colors[index % colors.count]).frame(width: 3, height: 36)
+            RoundedRectangle(cornerRadius: 2).fill(trackColor(index)).frame(width: 3, height: 36)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 7) {
-                    Text("\(index + 1)").font(.system(size: 11, weight: .semibold)).foregroundStyle(colors[index % colors.count])
+                    Text("\(index + 1)").font(.system(size: 11, weight: .semibold)).foregroundStyle(trackColor(index))
                     Text(names[index]).font(.system(size: 12, weight: .medium)).lineLimit(2)
                 }
                 Text(levelLabel(index)).font(.caption2).foregroundStyle(.secondary)
