@@ -65,7 +65,14 @@ enum AudioInputs {
 
     static func preferredDevice(in devices: [InputDevice], defaultID: AudioDeviceID, preferredUID: String?) -> InputDevice? {
         // Core Audio creates temporary aggregates for running engines; these aren't user inputs.
-        let candidates = devices.filter { $0.channelCount > 0 && !$0.name.hasPrefix("CADefaultDeviceAggregate-") && !$0.uid.hasPrefix("CADefaultDeviceAggregate-") }
+        let candidates = devices.filter { device in
+            let isBlackHole = [device.name, device.uid].contains { value in
+                value.lowercased().filter { !$0.isWhitespace }.contains("blackhole")
+            }
+            return device.channelCount > 0 && !isBlackHole
+                && !device.name.hasPrefix("CADefaultDeviceAggregate-")
+                && !device.uid.hasPrefix("CADefaultDeviceAggregate-")
+        }
         let maximum = candidates.map(\.channelCount).max() ?? 0
         guard maximum > 1 else {
             return candidates.first { $0.id == defaultID } ?? candidates.sorted { $0.uid < $1.uid }.first
