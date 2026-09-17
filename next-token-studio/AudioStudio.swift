@@ -82,7 +82,7 @@ final class AudioStudio: NSObject {
     }
     func beginMatching() {
         guard !isBusy, !isExporting, workspace.root != nil else { return }
-        selectPreferredInput()
+        refreshInputs()
         guard selectedInput != nil else { errorMessage = "没有可用的音频输入设备。"; return }
         workspace.reloadHosts()
         stopPlayback()
@@ -132,11 +132,6 @@ final class AudioStudio: NSObject {
             preferredUID: UserDefaults.standard.string(forKey: "selectedInputUID"))?.id ?? 0
     }
 
-    private func selectPreferredInput() {
-        inputDevices = AudioInputs.available()
-        choosePreferredInput()
-    }
-
     func reload() {
         guard workspace.root != nil else { return }
         do {
@@ -166,7 +161,7 @@ final class AudioStudio: NSObject {
             formatter.dateFormat = "yyyy-MM-dd HH-mm-ss"
             let name = "录音 \(formatter.string(from: Date()))-\(UUID().uuidString.prefix(4))"
             let url = try directory.appendingPathComponent(name).appendingPathExtension("wav")
-            selectPreferredInput()
+            refreshInputs()
             guard let device = selectedInput else { throw NSError(domain: "AudioStudio", code: 1, userInfo: [NSLocalizedDescriptionKey: "没有可用的音频输入设备。"] ) }
             let engine = AVAudioEngine()
             let input = engine.inputNode
