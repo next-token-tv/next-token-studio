@@ -18,6 +18,7 @@ struct Recording: Identifiable, Hashable {
     let url: URL
     let createdAt: Date
     var metadata: RecordingMetadata? = nil
+    var formatLabel: String { url.pathExtension == "recording" ? "WAV 分轨" : url.pathExtension.uppercased() }
     var name: String { url.deletingPathExtension().lastPathComponent }
 }
 
@@ -57,6 +58,7 @@ final class AudioStudio: NSObject {
     private var previewTask: Task<Void, Never>?
     private var previewGeneration = UUID()
     private var recordingStartedAt: Date?
+    private var recordingActivity: NSObjectProtocol?
     private var recordingMetadata: RecordingMetadata?
     var isPlaying = false
     var playbackTime: TimeInterval = 0
@@ -100,12 +102,12 @@ final class AudioStudio: NSObject {
 
     func openWorkspace() async {
         await workspace.choose()
-        if workspace.root != nil { reload() }
+        if workspace.root != nil { await recoverRecordings(); reload() }
     }
 
     func restoreWorkspace() async {
         await workspace.restore()
-        if workspace.root != nil { reload() }
+        if workspace.root != nil { await recoverRecordings(); reload() }
     }
 
     override init() {
@@ -132,11 +134,30 @@ final class AudioStudio: NSObject {
             preferredUID: UserDefaults.standard.string(forKey: "selectedInputUID"))?.id ?? 0
     }
 
+    private func recoverRecordings() async {
+        guard let root = try? directory else { return }
+        isRequestingPermission = true
+        defer { isRequestingPermission = false }
+        do {
+            let recovered = try await Task.detached { try RecordingRecovery.recover(in: root) }.value
+            let folders = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            let unfinished = folders.filter { RecordingRecovery.state(in: $0)?.status == "recording" }.count
+            if recovered > 0 || unfinished > 0 {
+                errorMessage = "已恢复 \(recovered) 段异常中断的录音。异常原文件保留在工作文件夹中。"
+                    + (unfinished > 0 ? "另有 \(unfinished) 段没有可用检查点，原文件保留待检查。" : "")
+            }
+        } catch { errorMessage = "录音恢复未完成，原文件已保留：\(error.localizedDescription)" }
+    }
+
     func reload() {
         guard workspace.root != nil else { return }
         do {
             recordings = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.creationDateKey])
-                .filter { ["m4a", "caf", "wav"].contains($0.pathExtension) }
+                .filter { ["m4a", "caf", "wav", "recording"].contains($0.pathExtension) }
+                .filter { url in
+                    guard url.pathExtension == "recording", let state = RecordingRecovery.state(in: url) else { return true }
+                    return state.status == "complete"
+                }
                 .map { url in
                     let metadata = (try? Data(contentsOf: url.appendingPathExtension("json"))).flatMap { try? JSONDecoder().decode(RecordingMetadata.self, from: $0) }
                     return Recording(url: url, createdAt: (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast, metadata: metadata)
@@ -160,7 +181,7 @@ final class AudioStudio: NSObject {
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyy-MM-dd HH-mm-ss"
             let name = "录音 \(formatter.string(from: Date()))-\(UUID().uuidString.prefix(4))"
-            let url = try directory.appendingPathComponent(name).appendingPathExtension("wav")
+            let url = try directory.appendingPathComponent(name).appendingPathExtension("recording")
             refreshInputs()
             guard let device = selectedInput else { throw NSError(domain: "AudioStudio", code: 1, userInfo: [NSLocalizedDescriptionKey: "没有可用的音频输入设备。"] ) }
             let engine = AVAudioEngine()
@@ -171,7 +192,8 @@ final class AudioStudio: NSObject {
             guard format.sampleRate > 0, Int(format.channelCount) == device.channelCount else {
                 throw NSError(domain: "AudioStudio", code: 1, userInfo: [NSLocalizedDescriptionKey: "设备提供 \(device.channelCount) 路输入，但音频引擎只打开了 \(format.channelCount) 路。请检查音频 MIDI 设置后重试。"])
             }
-            let writer = try CaptureWriter(url: url, inputFormat: format)
+            let metadata = RecordingMetadata(inputName: device.name, channelNames: channelLabels(for: device), sampleRate: format.sampleRate, hostIDs: workspace.hostIDs(for: device), inputChannelNames: device.channelNames)
+            let writer = try CaptureWriter(url: url, inputFormat: format, metadata: JSONEncoder().encode(metadata))
             input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in writer.append(buffer) }
             do { try engine.start() } catch {
                 input.removeTap(onBus: 0)
@@ -182,6 +204,7 @@ final class AudioStudio: NSObject {
             self.engine = engine
             self.writer = writer
             recordingURL = url
+            recordingActivity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: "正在录制音频")
             isRecording = true
             isPaused = false
             elapsed = 0
@@ -189,7 +212,7 @@ final class AudioStudio: NSObject {
             channelPeaks = Array(repeating: 0, count: device.channelCount)
             signalStatus = nil
             recordingStartedAt = Date()
-            recordingMetadata = RecordingMetadata(inputName: device.name, channelNames: channelLabels(for: device), sampleRate: format.sampleRate, hostIDs: workspace.hostIDs(for: device), inputChannelNames: device.channelNames)
+            recordingMetadata = metadata
             configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, self.isRecording, self.engine?.isRunning == false else { return }
@@ -236,11 +259,14 @@ final class AudioStudio: NSObject {
         engine?.inputNode.removeTap(onBus: 0)
         if let snapshot = writer?.snapshot() { elapsed = snapshot.elapsed; waveforms = snapshot.waveforms; channelPeaks = snapshot.peaks }
         writer?.close()
+        if let failure = writer?.snapshot().failure { errorMessage = "录音保存异常：\(failure)" }
         let recordedURLs = writer?.outputURLs ?? []
         writer = nil
         engine = nil
         timer?.invalidate()
         timer = nil
+        if let recordingActivity { ProcessInfo.processInfo.endActivity(recordingActivity) }
+        recordingActivity = nil
         isRecording = false
         isPaused = false
         signalStatus = nil

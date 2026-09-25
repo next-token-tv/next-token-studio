@@ -43,6 +43,7 @@ struct AudioCaptureChecks {
                     buffer.floatChannelData![0][i] = (offset + i) / bin % 2 == 0 ? 0.1 : 0.01
                 }
                 writer.append(buffer)
+                _ = writer.snapshot()
                 offset += count
             }
             let waveform = writer.snapshot().waveforms[0]
@@ -68,7 +69,7 @@ struct AudioCaptureChecks {
                 for channel in 0..<channelCount {
                     for frame in 0..<Int(buffer.frameLength) { buffer.floatChannelData![channel][frame] = values[channel] }
                 }
-                for _ in 0..<85 { writer.append(buffer) }
+                for _ in 0..<85 { writer.append(buffer); _ = writer.snapshot() }
                 let before = writer.snapshot()
                 precondition(before.failure == nil)
                 precondition(before.waveforms.count == channelCount)

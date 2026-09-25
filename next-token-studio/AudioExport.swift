@@ -30,7 +30,7 @@ nonisolated enum AudioExport {
     }
 
     private static func writeTracks(source: URL, names: [String], directory: URL) throws -> Manifest {
-        let input = try AVAudioFile(forReading: source)
+        let input = try RecordingAudioReader(forReading: source)
         let format = input.processingFormat
         let count = Int(format.channelCount)
         guard input.length > 0, count > 0 else { throw failure("这段录音没有音频数据。") }
@@ -94,7 +94,7 @@ nonisolated enum AudioExport {
     }
 
     private static func encodeAAC(source: URL, destination: URL) throws {
-        let input = try AVAudioFile(forReading: source)
+        let input = try RecordingAudioReader(forReading: source)
         let mono = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
         let stereo = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
         guard let converter = AVAudioConverter(from: input.processingFormat, to: mono) else { throw failure("无法转换此录音的采样率。") }

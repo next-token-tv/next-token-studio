@@ -115,7 +115,15 @@ nonisolated struct CaptureSnapshot {
 nonisolated final class CaptureWriter: @unchecked Sendable {
     static let waveformCapacity = 800
     private let lock = NSLock()
+    private let writeQueue = DispatchQueue(label: "tv.nexttoken.capture-write", qos: .userInitiated)
+    private let pendingLock = NSLock()
+    private var pending = 0
+    private var overloaded = false
     private var file: AVAudioFile?
+    private var trackFiles: [DurableWAV] = []
+    private var checkpointFrames: Int64 = 0
+    private let metadata: Data?
+    private var splitTracks: Bool { baseURL.pathExtension == "recording" }
     private let baseURL: URL
     private let segmentFrameLimit: Int64
     private var segmentFrames: Int64 = 0
@@ -134,28 +142,46 @@ nonisolated final class CaptureWriter: @unchecked Sendable {
     private var failure: String?
     private var lastBufferAt: Date?
 
-    init(url: URL, inputFormat: AVAudioFormat, maximumSegmentBytes: Int64 = 3_900_000_000) throws {
+    init(url: URL, inputFormat: AVAudioFormat, maximumSegmentBytes: Int64 = 3_900_000_000, metadata: Data? = nil) throws {
         guard inputFormat.commonFormat == .pcmFormatFloat32, !inputFormat.isInterleaved, inputFormat.channelCount > 0, inputFormat.sampleRate > 0 else {
             throw NSError(domain: "AudioStudio", code: 3, userInfo: [NSLocalizedDescriptionKey: "此输入设备的音频格式不受支持。"])
         }
+        self.metadata = metadata
         baseURL = url
         urls = [url]
-        segmentFrameLimit = url.pathExtension.lowercased() == "wav"
-            ? max(1, maximumSegmentBytes / (Int64(inputFormat.channelCount) * 4)) : Int64.max
+        segmentFrameLimit = max(1, maximumSegmentBytes / (url.pathExtension == "recording" ? 4 : Int64(inputFormat.channelCount) * 4))
         format = inputFormat
         histories = Array(repeating: Array(repeating: 0, count: Self.waveformCapacity), count: Int(format.channelCount))
         peaks = Array(repeating: 0, count: Int(format.channelCount))
         latestPeaks = peaks
         binLength = max(1, Int(format.sampleRate * 0.01))
-        var settings = format.settings
-        settings[AVLinearPCMIsNonInterleaved] = false
-        file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        try openSegment(url)
+
     }
 
     func append(_ input: AVAudioPCMBuffer) {
+        pendingLock.lock()
+        guard pending < 8, !overloaded else { overloaded = true; pendingLock.unlock(); return }
+        pending += 1
+        pendingLock.unlock()
+        guard let copy = AVAudioPCMBuffer(pcmFormat: input.format, frameCapacity: input.frameLength),
+              let source = input.floatChannelData, let target = copy.floatChannelData else {
+            pendingLock.lock(); pending -= 1; overloaded = true; pendingLock.unlock(); return
+        }
+        copy.frameLength = input.frameLength
+        for channel in 0..<Int(input.format.channelCount) {
+            target[channel].update(from: source[channel], count: Int(input.frameLength))
+        }
+        writeQueue.async { [self] in
+            appendNow(copy)
+            pendingLock.lock(); pending -= 1; pendingLock.unlock()
+        }
+    }
+
+    private func appendNow(_ input: AVAudioPCMBuffer) {
         lock.lock()
         defer { lock.unlock() }
-        guard failure == nil, file != nil else { return }
+        guard failure == nil, file != nil || !trackFiles.isEmpty else { return }
         lastBufferAt = Date()
         guard !paused, input.frameLength > 0 else { return }
         guard input.format.channelCount == format.channelCount, input.format.sampleRate == format.sampleRate,
@@ -183,21 +209,56 @@ nonisolated final class CaptureWriter: @unchecked Sendable {
         }
     }
 
+    private func checkDiskSpace(_ url: URL) throws {
+        let attributes = try FileManager.default.attributesOfFileSystem(forPath: url.deletingLastPathComponent().path)
+        if let available = attributes[.systemFreeSize] as? NSNumber, available.int64Value < 100_000_000 {
+            throw NSError(domain: "AudioCapture", code: 5, userInfo: [NSLocalizedDescriptionKey: "磁盘剩余空间不足 100 MB，已停止录音以保留现有数据。"])
+        }
+    }
+    private func openSegment(_ url: URL) throws {
+        try checkDiskSpace(url)
+        if splitTracks {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+            do {
+                let names = (0..<Int(format.channelCount)).map { String(format: "track-%02d.wav", $0 + 1) }
+                try JSONEncoder().encode(names).write(to: url.appendingPathComponent("tracks.json"), options: .atomic)
+                try metadata?.write(to: url.appendingPathExtension("json"), options: .atomic)
+                try RecordingRecovery.save(.init(status: "recording", sampleRate: format.sampleRate, safeFrames: 0), in: url)
+                trackFiles = try (0..<Int(format.channelCount)).map { channel in
+                    try DurableWAV(url: url.appendingPathComponent(String(format: "track-%02d.wav", channel + 1)), sampleRate: format.sampleRate)
+                }
+            } catch {
+                trackFiles = []
+                try? FileManager.default.removeItem(at: url)
+                throw error
+            }
+        } else {
+            var settings = format.settings
+            settings[AVLinearPCMIsNonInterleaved] = false
+            file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        }
+    }
+
     private func writeSegments(_ input: AVAudioPCMBuffer) throws {
         var offset = 0
         while offset < Int(input.frameLength) {
             if segmentFrames == segmentFrameLimit {
-                file = nil // Finalize the previous WAV header before opening the next segment.
+                try checkpoint(complete: true)
+                file = nil
+                trackFiles = []
                 let next = baseURL.deletingPathExtension()
-                    .appendingPathExtension("part-\(String(format: "%03d", urls.count + 1)).wav")
-                var settings = format.settings
-                settings[AVLinearPCMIsNonInterleaved] = false
-                file = try AVAudioFile(forWriting: next, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+                    .appendingPathExtension("part-\(String(format: "%03d", urls.count + 1)).\(baseURL.pathExtension)")
+                try openSegment(next)
                 urls.append(next)
                 segmentFrames = 0
+                checkpointFrames = 0
             }
             let count = min(Int(input.frameLength) - offset, Int(segmentFrameLimit - segmentFrames))
-            if offset == 0 && count == Int(input.frameLength) {
+            if splitTracks {
+                for channel in trackFiles.indices {
+                    try trackFiles[channel].append(input.floatChannelData![channel] + offset, count: count)
+                }
+            } else if offset == 0 && count == Int(input.frameLength) {
                 try file!.write(from: input)
             } else {
                 let slice = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
@@ -209,11 +270,25 @@ nonisolated final class CaptureWriter: @unchecked Sendable {
             }
             segmentFrames += Int64(count)
             offset += count
+            if splitTracks && segmentFrames - checkpointFrames >= Int64(format.sampleRate * 5) {
+                try checkpoint(complete: false)
+            }
         }
     }
 
-    func setPaused(_ value: Bool) { lock.lock(); paused = value; lock.unlock() }
+    private func checkpoint(complete: Bool) throws {
+        guard splitTracks, !trackFiles.isEmpty, let folder = urls.last else { return }
+        for file in trackFiles { try file.checkpoint() }
+        let safeFrames = trackFiles.map(\.frames).min() ?? 0
+        try RecordingRecovery.save(.init(status: complete ? "complete" : "recording", sampleRate: format.sampleRate, safeFrames: safeFrames), in: folder)
+        checkpointFrames = segmentFrames
+        if !complete { try checkDiskSpace(folder) }
+    }
+
+    func setPaused(_ value: Bool) { writeQueue.sync { lock.lock(); paused = value; lock.unlock() } }
     func snapshot() -> CaptureSnapshot {
+        writeQueue.sync {}
+        pendingLock.lock(); let overflow = overloaded; pendingLock.unlock()
         lock.lock()
         defer { lock.unlock() }
         let ordered = histories.map { history in
@@ -221,7 +296,12 @@ nonisolated final class CaptureWriter: @unchecked Sendable {
                 ? Array(history.prefix(historyCount))
                 : Array(history[historyCursor...]) + Array(history[..<historyCursor])
         }
-        return CaptureSnapshot(elapsed: Double(frames) / format.sampleRate, waveforms: ordered, peaks: latestPeaks, failure: failure, lastBufferAt: lastBufferAt)
+        return CaptureSnapshot(elapsed: Double(frames) / format.sampleRate, waveforms: ordered, peaks: latestPeaks, failure: overflow ? "磁盘写入跟不上录音速度，已停止接收新音频。" : failure, lastBufferAt: lastBufferAt)
     }
-    func close() { lock.lock(); file = nil; lock.unlock() }
+    func close() {
+        writeQueue.sync {}
+        lock.lock(); defer { lock.unlock() }
+        do { try checkpoint(complete: failure == nil) } catch { failure = error.localizedDescription }
+        file = nil; trackFiles = []
+    }
 }

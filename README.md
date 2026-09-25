@@ -5,15 +5,15 @@
 ## 功能
 
 - 左侧录音资料库，右侧多轨工作区；选中录音后显示各路完整波形、统一时间刻度和同步播放游标。
-- 启动应用或当前输入设备不可用时，自动选择通道数最多的多路输入；手动选择优先，开始录音或主播匹配时保留当前可用设备，不重新覆盖选择。没有多路设备时选择系统默认麦克风。通道数并列时优先上次使用的设备，其次系统默认设备；自动选择排除 BlackHole（包括系统默认或上次使用的 BlackHole）及音频引擎创建的临时聚集设备；BlackHole 仍保留在手动选择列表。显示实际输入通道数。每路独立显示最近 8 秒波形（10 ms 峰值粒度，−60 至 0 dBFS 对数显示）、通道来源和 dBFS 峰值；支持暂停、继续与停止保存。输入设备断开或配置改变时停止并保存。
-- WAV（32-bit float）无损录音保留设备原始采样率和全部输入通道，通道名称保存在同名 JSON 旁文件中；兼容已有 CAF 和 M4A 录音。回放直接分块读取原始文件，实时混合全部通道，不生成混音文件，总峰值过高时统一衰减以防削波，原始录音保持不变。
+- 启动应用或当前输入设备不可用时，自动选择通道数最多的多路输入；手动选择优先，开始录音或主播匹配时保留当前可用设备，不重新覆盖选择。没有多路设备时选择系统默认麦克风。通道数并列时优先上次使用的设备，其次系统默认设备；自动选择排除 BlackHole（包括系统默认或上次使用的 BlackHole）及音频引擎创建的临时聚集设备；BlackHole 仍保留在手动选择列表。显示实际输入通道数。每路独立显示最近 8 秒波形（10 ms 峰值粒度，各轨共用固定幅度曲线，不按各轨峰值归一化）、通道来源和 dBFS 峰值；支持暂停、继续与停止保存。输入设备断开或配置改变时停止并保存。
+- 每路输入直接录制为独立的单声道 WAV（32-bit float），保留设备原始采样率及共同时间起点，通道名称保存在同名 JSON 旁文件中；兼容已有 CAF 和 M4A 录音。回放直接分块读取原始文件，实时混合全部通道，不生成混音文件，总峰值过高时统一衰减以防削波，原始录音保持不变。
 - 播放器支持播放、暂停、回到开头、进度拖动及点击任意轨道波形定位；空格键控制播放与暂停。
 - 导出分轨 WAV：每个输入通道生成一个单声道 32-bit float WAV，保留原始采样率、完整时长与静音段；文件名为 `host-ch01.wav` 等，并附带 `channels.json` 通道来源表，适用于 NextToken 的分轨转写与后期流程。
 - 导出混音 M4A：全部通道按回放规则混合，输出 AAC-LC、48 kHz、双声道，目标码率 320 kbps。此导出不包含片头片尾编辑或响度母带处理。导出在后台执行，可取消；默认保存到工作文件夹的 `exports/`，完成后可在 Finder 中定位。
 - 支持工具栏删除、右键「移到废纸篓」和 ⌘⌫。音频与通道信息一起移到废纸篓，删除正在回放的录音会先停止播放；录音期间不可删除。
 - 首次录音请求麦克风授权。工作文件夹为 `~/Documents/Next Token Studio`，首次通过系统文件夹选择器授权，后续以安全作用域书签恢复访问。旧沙盒中的录音及通道资料迁移至 `recordings/`，同名冲突不会覆盖。
 
-分轨文件保留共同的录音时间起点。通道编号不代表说话人身份，后期需确认通道与人物的对应关系。新录音保存为多通道 WAV；每段音频数据达到 3.9 GB 时自动续写下一段（`.part-002.wav` 等），各段独立显示在资料库中，导出不会修改原始录音。
+分轨文件保留共同的录音时间起点。通道编号不代表说话人身份，后期需确认通道与人物的对应关系。新录音保存为 `.recording` 文件夹，内含 `track-01.wav` 等独立轨道和 `tracks.json` 清单；资料库将文件夹显示为一条录音，回放同步混合所有轨道。每路达到 3.9 GB 时全部轨道一起续写下一段文件夹，各段独立显示在资料库中，导出不会修改原始录音。
 
 ## 工作文件夹与主播
 
@@ -60,18 +60,35 @@ xcodebuild -project next-token-studio.xcodeproj -scheme next-token-studio -confi
 录音检查覆盖 44.1 / 48 kHz 下的 1、4、5 路输入，验证各路独立波形、静音通道、反相信号、暂停继续、保存后的逐样本一致性与时长。回放检查验证全部通道混音、防削波、各轨波形与时间对齐，以及源文件不被修改。导出检查覆盖 1、4、5 路输入、WAV 逐样本一致性、M4A 编码参数与各通道可听信号，以及覆盖保护和失败清理：
 
 ```sh
-swiftc next-token-studio/AudioCapture.swift Tests/AudioCaptureChecks.swift -o /tmp/next-token-audio-checks
+swiftc next-token-studio/RecordingAudioReader.swift next-token-studio/RecordingRecovery.swift next-token-studio/AudioCapture.swift Tests/AudioCaptureChecks.swift -o /tmp/next-token-audio-checks
 /tmp/next-token-audio-checks
-swiftc next-token-studio/StreamingPlayback.swift Tests/StreamingPlaybackChecks.swift -o /tmp/next-token-stream-checks
+swiftc next-token-studio/RecordingAudioReader.swift next-token-studio/StreamingPlayback.swift Tests/StreamingPlaybackChecks.swift -o /tmp/next-token-stream-checks
 /tmp/next-token-stream-checks
-swiftc next-token-studio/PlaybackRender.swift Tests/PlaybackRenderChecks.swift -o /tmp/next-token-playback-checks
+swiftc next-token-studio/RecordingAudioReader.swift next-token-studio/PlaybackRender.swift Tests/PlaybackRenderChecks.swift -o /tmp/next-token-playback-checks
 /tmp/next-token-playback-checks
 swiftc next-token-studio/RecordingTrash.swift Tests/RecordingTrashChecks.swift -o /tmp/next-token-trash-checks
 /tmp/next-token-trash-checks
-swiftc next-token-studio/PlaybackRender.swift next-token-studio/AudioExport.swift Tests/AudioExportChecks.swift -o /tmp/next-token-export-checks
+swiftc next-token-studio/RecordingAudioReader.swift next-token-studio/PlaybackRender.swift next-token-studio/AudioExport.swift Tests/AudioExportChecks.swift -o /tmp/next-token-export-checks
 /tmp/next-token-export-checks
 swiftc next-token-studio/WorkspaceData.swift Tests/WorkspaceChecks.swift -o /tmp/next-token-workspace-checks
 /tmp/next-token-workspace-checks next-token-studio/WorkspaceSeed
 swiftc next-token-studio/WorkspaceData.swift next-token-studio/HostBinding.swift next-token-studio/MatchingAudio.swift Tests/HostMatchingChecks.swift -o /tmp/next-token-host-checks
 /tmp/next-token-host-checks
 ```
+
+## 录音恢复与保护
+
+分轨 WAV 由独立写入队列保存，采集回调只复制音频块；队列最多保留 8 块，写入跟不上时停止并提示。每 5 秒音频更新 WAV 文件头、同步各路文件并原子保存共同检查点。开始录制就写入通道及主播资料；正常停止保存最后的音频。
+
+重新打开工作文件夹时，后台检查未完成录音，按共同安全帧数创建 `.recovered.recording` 副本，重建 WAV 文件头并对齐所有轨道。异常原文件保留，重复启动不会重复恢复。没有检查点的短录音保留原文件并提示。该机制不承诺断电、磁盘损坏或系统故障下零丢失；尚未完成检查点的尾部音频可能无法恢复。
+
+录音期间阻止自动空闲睡眠，正常退出需要确认停止并保存。开始及检查点检查磁盘空间，低于 100 MB 时停止；输入断开、写入失败或写入队列超载也会停止并报告。
+
+恢复故障检查：
+
+```sh
+swiftc next-token-studio/RecordingAudioReader.swift next-token-studio/RecordingRecovery.swift next-token-studio/AudioCapture.swift Tests/RecordingRecoveryChecks.swift -o /tmp/next-token-recovery-checks
+/tmp/next-token-recovery-checks
+```
+
+该检查对生成测试音频的子进程发送 SIGKILL，并验证文件头损坏、尾部长度不一致时的共同检查点恢复、原文件保留及重复恢复幂等性。

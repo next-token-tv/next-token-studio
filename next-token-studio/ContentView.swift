@@ -29,7 +29,7 @@ struct ContentView: View {
                                 HStack {
                                     Text(recording.metadata.map { "\($0.channelNames.count) 路录音" } ?? "录音")
                                     Spacer()
-                                    Text(recording.url.pathExtension.uppercased())
+                                    Text(recording.formatLabel)
                                 }.font(.caption).foregroundStyle(.secondary)
                             }
                             .padding(.vertical, 8).tag(recording.id)
@@ -225,7 +225,7 @@ struct ContentView: View {
             if isPlayback {
                 HStack(spacing: 16) {
                     Label("\(studio.playbackChannelNames.count) 路音轨", systemImage: "waveform")
-                    if let recording = activeRecording { Text(recording.url.pathExtension.uppercased()) }
+                    if let recording = activeRecording { Text(recording.formatLabel) }
                     if studio.playbackSampleRate > 0 { Text(String(format: "%.1f kHz", studio.playbackSampleRate / 1000)) }
                     Spacer()
                     Text("点击波形定位播放")

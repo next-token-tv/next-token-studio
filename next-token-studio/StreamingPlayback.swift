@@ -6,7 +6,7 @@ nonisolated final class StreamingPlayback: @unchecked Sendable {
     private let engine: AVAudioEngine
     private let node = AVAudioPlayerNode()
     private let queue = DispatchQueue(label: "tv.nexttoken.playback", qos: .userInitiated)
-    private let file: AVAudioFile
+    private let file: RecordingAudioReader
     private let gain: Float
     private let monoFormat: AVAudioFormat
     private var generation = 0
@@ -18,7 +18,7 @@ nonisolated final class StreamingPlayback: @unchecked Sendable {
 
     init(source: URL, gain: Float, engine: AVAudioEngine = AVAudioEngine()) throws {
         self.engine = engine
-        file = try AVAudioFile(forReading: source)
+        file = try RecordingAudioReader(forReading: source)
         self.gain = gain
         duration = Double(file.length) / file.processingFormat.sampleRate
         monoFormat = AVAudioFormat(standardFormatWithSampleRate: file.processingFormat.sampleRate, channels: 1)!

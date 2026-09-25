@@ -22,9 +22,11 @@ nonisolated enum PlaybackRender {
     }
 
     private static func signature(_ source: URL) throws -> String {
-        let values = try FileManager.default.attributesOfItem(atPath: source.path)
-        guard let size = values[.size] as? NSNumber, let date = values[.modificationDate] as? Date else { throw readError() }
-        return "\(size)-\(date.timeIntervalSince1970)"
+        try RecordingAudioReader.sourceFiles(source).map { url in
+            let values = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard let size = values[.size] as? NSNumber, let date = values[.modificationDate] as? Date else { throw readError() }
+            return "\(url.lastPathComponent):\(size)-\(date.timeIntervalSince1970)"
+        }.joined(separator: "|")
     }
 
     static func removeCache(source: URL, cache: URL) {
@@ -57,7 +59,7 @@ nonisolated enum PlaybackRender {
     // Sum discrete microphone inputs explicitly, including channels labelled as surround/LFE.
     // A single gain for the whole file prevents clipping without changing relative channel levels.
     static func analyze(source: URL) throws -> PlaybackOverview {
-        let input = try AVAudioFile(forReading: source)
+        let input = try RecordingAudioReader(forReading: source)
         let format = input.processingFormat
         let channels = Int(format.channelCount)
         let length = input.length
@@ -96,7 +98,7 @@ nonisolated enum PlaybackRender {
     // File rendering is reserved for explicit export.
     static func prepare(source: URL, destination: URL) throws -> PlaybackOverview {
         let overview = try analyze(source: source)
-        let reader = try AVAudioFile(forReading: source)
+        let reader = try RecordingAudioReader(forReading: source)
         let format = reader.processingFormat
         let channels = Int(format.channelCount)
         let length = reader.length
