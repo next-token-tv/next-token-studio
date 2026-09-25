@@ -69,7 +69,7 @@ struct TrackWorkspace: View {
                         HStack {
                             Text(isPlayback ? "各路波形与播放位置同步" : "最近 8 秒")
                             Spacer()
-                            Text("对数波形 · −60 至 0 dBFS")
+                            Text("幅度波形 · 各轨统一比例")
                         }.font(.caption2).foregroundStyle(.secondary).padding(.top, 14)
                     }.padding(.horizontal, 24).padding(.top, 12).padding(.bottom, 16)
                 }
@@ -139,7 +139,7 @@ private struct TrackWaveform: View {
                     if samples.indices.contains(index) { peak = max(peak, samples[index]) }
                 }
                 guard peak > 0.000001 else { continue }
-                let level = max(0, min(1, (20 * log10(peak) + 60) / 60))
+                let level = WaveformAmplitude.height(for: peak)
                 let height = max(1, CGFloat(level) * (size.height - 18))
                 let x = (CGFloat(column) + 0.5) * step
                 var bar = Path()
