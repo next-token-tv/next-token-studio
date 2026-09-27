@@ -397,6 +397,17 @@ final class AudioStudio: NSObject {
 
     func deleteRecording(_ recording: Recording) {
         guard !isBusy, !isExporting, recordings.contains(where: { $0.id == recording.id }) else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "将这段录音移到废纸篓？"
+        alert.informativeText = "“\(recording.name)”\n\n此录音的全部音轨和通道资料将一起移到废纸篓，可在 Finder 的废纸篓中恢复。"
+        let cancel = alert.addButton(withTitle: "取消")
+        cancel.keyEquivalent = "\r"
+        let confirm = alert.addButton(withTitle: "移到废纸篓")
+        confirm.hasDestructiveAction = true
+        confirm.keyEquivalent = ""
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        guard !isBusy, !isExporting, recordings.contains(where: { $0.id == recording.id }) else { return }
         if playingID == recording.id { stopPlayback() }
         do {
             try RecordingTrash.move(recording.url)
