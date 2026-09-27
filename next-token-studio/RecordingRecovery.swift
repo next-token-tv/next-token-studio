@@ -1,4 +1,5 @@
 import Foundation
+import AVFoundation
 
 // Fixed-layout IEEE Float WAV: RIFF, fmt, fact, data. All integers are little endian.
 nonisolated final class DurableWAV {
@@ -52,48 +53,95 @@ nonisolated enum RecordingRecovery {
         guard let data = try? Data(contentsOf: folder.appendingPathComponent("recovery.json")) else { return nil }
         return try? JSONDecoder().decode(State.self, from: data)
     }
-    static func recover(in root: URL) throws -> Int {
-        let manager = FileManager.default
+    struct Report: Sendable {
         var recovered = 0
-        for folder in try manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) where folder.pathExtension == "recording" {
-            guard var state = state(in: folder), state.status == "recording", state.safeFrames > 0 else { continue }
-            let files = try RecordingAudioReader.sourceFiles(folder)
-            let available = try files.map { url -> Int64 in
-                let attributes = try manager.attributesOfItem(atPath: url.path)
-                let bytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
-                return max(0, (bytes - 56) / 4)
-            }
-            let frames = min(state.safeFrames, available.min() ?? 0)
-            guard frames > 0 else { continue }
-            // Deterministic destination makes recovery safe to retry after another crash.
-            let destination = folder.deletingPathExtension().appendingPathExtension("recovered.recording")
-            if !manager.fileExists(atPath: destination.path) {
-                let staging = root.appendingPathComponent(".recovery-" + UUID().uuidString)
-                try manager.createDirectory(at: staging, withIntermediateDirectories: false)
-                defer { try? manager.removeItem(at: staging) }
-                for source in files {
-                    let target = staging.appendingPathComponent(source.lastPathComponent)
-                    try manager.copyItem(at: source, to: target)
-                    let handle = try FileHandle(forWritingTo: target)
-                    defer { try? handle.close() }
-                    try handle.truncate(atOffset: UInt64(56 + frames * 4))
-                    try handle.seek(toOffset: 0)
-                    try handle.write(contentsOf: DurableWAV.header(rate: state.sampleRate, frames: frames))
-                    try handle.synchronize()
-                }
-                try manager.copyItem(at: folder.appendingPathComponent("tracks.json"), to: staging.appendingPathComponent("tracks.json"))
-                try save(State(status: "complete", sampleRate: state.sampleRate, safeFrames: frames), in: staging)
-                let metadata = folder.appendingPathExtension("json")
-                if manager.fileExists(atPath: metadata.path) {
-                    let bytes = try Data(contentsOf: metadata)
-                    try bytes.write(to: destination.appendingPathExtension("json"), options: .atomic)
-                }
-                try manager.moveItem(at: staging, to: destination)
-            }
-            state.status = "recovered"
-            try save(state, in: folder)
-            recovered += 1
+        var issues: [String] = []
+    }
+    static func recover(in root: URL) throws -> Int { try recoverReport(in: root).recovered }
+
+    static func recoverReport(in root: URL) throws -> Report {
+        var report = Report()
+        for folder in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) where folder.pathExtension == "recording" {
+            let status = state(in: folder)?.status
+            if status == "complete" || status == "recovered" { continue }
+            do { if try recoverFolder(folder, root: root) { report.recovered += 1 } }
+            catch { report.issues.append("\(folder.lastPathComponent)：\(error.localizedDescription)") }
         }
-        return recovered
+        return report
+    }
+
+    private static func recoverFolder(_ folder: URL, root: URL) throws -> Bool {
+        let manager = FileManager.default
+        let files = try RecordingAudioReader.sourceFiles(folder)
+        var checkpoint = state(in: folder)
+        // A corrupt journal may use only verified fixed-layout WAV headers, never guess from raw bytes.
+        if checkpoint == nil {
+            let headers = try files.map { url -> (Double, Int64) in
+                let handle = try FileHandle(forReadingFrom: url)
+                defer { try? handle.close() }
+                guard let bytes = try handle.read(upToCount: 56), bytes.count == 56 else { throw CocoaError(.fileReadCorruptFile) }
+                func u32(_ offset: Int) -> UInt32 {
+                    (0..<4).reduce(UInt32(0)) { $0 | UInt32(bytes[offset + $1]) << ($1 * 8) }
+                }
+                let rate = Double(u32(24)), frames = Int64(u32(52) / 4)
+                guard rate >= 8000, rate <= 384000, bytes == DurableWAV.header(rate: rate, frames: frames) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                return (rate, frames)
+            }
+            guard let rate = headers.first?.0, headers.allSatisfy({ $0.0 == rate }) else { throw CocoaError(.fileReadCorruptFile) }
+            checkpoint = State(status: "interrupted", sampleRate: rate, safeFrames: headers.map { $0.1 }.min() ?? 0)
+        }
+        guard var checkpoint, checkpoint.sampleRate.isFinite, (8000...384000).contains(checkpoint.sampleRate),
+              checkpoint.safeFrames > 0, checkpoint.safeFrames <= (Int64(UInt32.max) - 48) / 4 else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let available = try files.map { url -> Int64 in
+            let attributes = try manager.attributesOfItem(atPath: url.path)
+            return max(0, ((attributes[.size] as? NSNumber)?.int64Value ?? 0) - 56) / 4
+        }
+        let frames = min(checkpoint.safeFrames, available.min() ?? 0)
+        guard frames > 0 else { throw CocoaError(.fileReadCorruptFile) }
+        let destination = folder.deletingPathExtension().appendingPathExtension("recovered.recording")
+        if manager.fileExists(atPath: destination.path) {
+            let reader = try RecordingAudioReader(forReading: destination)
+            guard state(in: destination)?.status == "complete", reader.length == frames,
+                  reader.processingFormat.sampleRate == checkpoint.sampleRate,
+                  Int(reader.processingFormat.channelCount) == files.count else { throw CocoaError(.fileReadCorruptFile) }
+        } else {
+            let required = (56 + frames * 4) * Int64(files.count) + 100_000_000
+            let disk = try manager.attributesOfFileSystem(forPath: root.path)
+            guard let free = disk[.systemFreeSize] as? NSNumber, free.int64Value >= required else { throw CocoaError(.fileWriteOutOfSpace) }
+            let staging = root.appendingPathComponent(".recovery-" + UUID().uuidString)
+            try manager.createDirectory(at: staging, withIntermediateDirectories: false)
+            defer { try? manager.removeItem(at: staging) }
+            for source in files {
+                let target = staging.appendingPathComponent(source.lastPathComponent)
+                guard manager.createFile(atPath: target.path, contents: DurableWAV.header(rate: checkpoint.sampleRate, frames: frames)) else { throw CocoaError(.fileWriteUnknown) }
+                let input = try FileHandle(forReadingFrom: source)
+                defer { try? input.close() }
+                let output = try FileHandle(forWritingTo: target)
+                defer { try? output.close() }
+                try input.seek(toOffset: 56); try output.seekToEnd()
+                var remaining = frames * 4
+                while remaining > 0 {
+                    guard let data = try input.read(upToCount: Int(min(remaining, 1_048_576))), !data.isEmpty else { throw CocoaError(.fileReadCorruptFile) }
+                    try output.write(contentsOf: data)
+                    remaining -= Int64(data.count)
+                }
+                try output.synchronize()
+            }
+            try manager.copyItem(at: folder.appendingPathComponent("tracks.json"), to: staging.appendingPathComponent("tracks.json"))
+            try save(State(status: "complete", sampleRate: checkpoint.sampleRate, safeFrames: frames), in: staging)
+            let metadata = folder.appendingPathExtension("json")
+            if manager.fileExists(atPath: metadata.path) {
+                try Data(contentsOf: metadata).write(to: destination.appendingPathExtension("json"), options: .atomic)
+            }
+            try manager.moveItem(at: staging, to: destination)
+        }
+        checkpoint.status = "recovered"
+        try save(checkpoint, in: folder)
+        return true
     }
 }
