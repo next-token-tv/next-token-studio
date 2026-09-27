@@ -13,7 +13,7 @@ import AVFoundation
             writer.close()
             let segments = writer.outputURLs
             defer { for segment in segments { try? FileManager.default.removeItem(at: segment) } }
-            precondition(segments.count == 2 && writer.snapshot().failure == nil)
+            precondition(segments.count == 2 && drainedSnapshot(writer).failure == nil)
             var offset = 0
             for segment in segments {
                 let tracks = try RecordingAudioReader.sourceFiles(segment)
@@ -47,3 +47,5 @@ import AVFoundation
         print("PASS: shared amplitude curve preserves clear strong/weak distinction")
     }
 }
+
+private func drainedSnapshot(_ writer: CaptureWriter) -> CaptureSnapshot { writer.flush(); return writer.snapshot() }

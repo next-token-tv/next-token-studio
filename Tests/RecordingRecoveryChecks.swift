@@ -9,7 +9,7 @@ import Darwin
             let block = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4800)!
             block.frameLength = 4800
             for channel in 0..<4 { for frame in 0..<4800 { block.floatChannelData![channel][frame] = Float(channel + 1) * 0.05 } }
-            for _ in 0..<70 { writer.append(block); precondition(writer.snapshot().failure == nil) }
+            for _ in 0..<70 { writer.append(block); precondition(drainedSnapshot(writer).failure == nil) }
             kill(getpid(), SIGKILL)
             return
         }
@@ -43,3 +43,5 @@ import Darwin
         print("PASS: SIGKILL at 7 seconds; synchronized 5-second checkpoint recovered, exact samples, original WAVs unchanged, metadata preserved, idempotent restart")
     }
 }
+
+private func drainedSnapshot(_ writer: CaptureWriter) -> CaptureSnapshot { writer.flush(); return writer.snapshot() }

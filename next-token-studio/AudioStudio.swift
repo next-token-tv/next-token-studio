@@ -29,6 +29,9 @@ final class AudioStudio: NSObject {
     var selectedID: URL?
     var isMatching = false
     var isRecording = false
+    var isFinalizing = false
+    private var finalizationTask: Task<Void, Never>?
+    private var saveFailed = false
     var isPaused = false
     var isRequestingPermission = false
     var elapsed: TimeInterval = 0
@@ -50,6 +53,7 @@ final class AudioStudio: NSObject {
     var waveforms: [[Float]] = []
     var channelPeaks: [Float] = []
     var signalStatus: String?
+    var recordingHealth: String?
     var playbackWaveforms: [[Float]] = []
     var playbackPeaks: [Float] = []
     var playbackSampleRate: Double = 0
@@ -119,11 +123,14 @@ final class AudioStudio: NSObject {
     }
 
     func refreshInputs() {
+        guard !isFinalizing else { return }
         inputDevices = AudioInputs.available()
         if !inputDevices.contains(where: { $0.id == selectedInputID }) {
             if isRecording {
+                writer?.markInterrupted("输入设备已断开。")
                 stopRecording()
-                errorMessage = "输入设备已断开，已有录音已保存。请选择输入设备后重新录音。"
+                errorMessage = "输入设备已断开，正在保存已接收的录音。"
+                return
             }
             choosePreferredInput()
         }
@@ -139,12 +146,10 @@ final class AudioStudio: NSObject {
         isRequestingPermission = true
         defer { isRequestingPermission = false }
         do {
-            let recovered = try await Task.detached { try RecordingRecovery.recover(in: root) }.value
-            let folders = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-            let unfinished = folders.filter { RecordingRecovery.state(in: $0)?.status == "recording" }.count
-            if recovered > 0 || unfinished > 0 {
-                errorMessage = "已恢复 \(recovered) 段异常中断的录音。异常原文件保留在工作文件夹中。"
-                    + (unfinished > 0 ? "另有 \(unfinished) 段没有可用检查点，原文件保留待检查。" : "")
+            let report = try await Task.detached { try RecordingRecovery.recoverReport(in: root) }.value
+            if report.recovered > 0 || !report.issues.isEmpty {
+                errorMessage = "已恢复 \(report.recovered) 段异常中断的录音。异常原文件保留在工作文件夹中。"
+                    + (report.issues.isEmpty ? "" : "另有 \(report.issues.count) 段未能恢复，原文件保留，下次打开会重试。\n" + report.issues.joined(separator: "\n"))
             }
         } catch { errorMessage = "录音恢复未完成，原文件已保留：\(error.localizedDescription)" }
     }
@@ -155,7 +160,8 @@ final class AudioStudio: NSObject {
             recordings = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.creationDateKey])
                 .filter { ["m4a", "caf", "wav", "recording"].contains($0.pathExtension) }
                 .filter { url in
-                    guard url.pathExtension == "recording", let state = RecordingRecovery.state(in: url) else { return true }
+                    guard url.pathExtension == "recording" else { return true }
+                    guard let state = RecordingRecovery.state(in: url) else { return false }
                     return state.status == "complete"
                 }
                 .map { url in
@@ -216,8 +222,9 @@ final class AudioStudio: NSObject {
             configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, self.isRecording, self.engine?.isRunning == false else { return }
+                    self.writer?.markInterrupted("音频设备配置发生变化。")
                     self.stopRecording()
-                    self.errorMessage = "音频设备配置发生变化，已有录音已保存。请重新开始录音。"
+                    self.errorMessage = "音频设备配置发生变化，正在保存已接收的录音。"
                 }
             }
             timer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
@@ -229,14 +236,18 @@ final class AudioStudio: NSObject {
     private func updateMeter() {
         guard let writer, isRecording else { return }
         let snapshot = writer.snapshot()
+        recordingHealth = String(format: "已写入 %.1f 秒 · 已同步 %.1f 秒 · 缓冲 %.1f 秒 · 磁盘约剩 %.0f 分钟", snapshot.elapsed, snapshot.safeElapsed, snapshot.queuedSeconds, snapshot.remainingSeconds / 60)
         elapsed = snapshot.elapsed
         waveforms = snapshot.waveforms
         channelPeaks = snapshot.peaks
+        if isFinalizing { return }
         if !isPaused, Date().timeIntervalSince(recordingStartedAt ?? Date()) > 2 {
             if snapshot.lastBufferAt == nil || Date().timeIntervalSince(snapshot.lastBufferAt!) > 2 {
                 signalStatus = "未收到音频数据，请检查输入设备连接。"
             } else if snapshot.peaks.allSatisfy({ $0 < 0.00001 }) {
                 signalStatus = "所有通道均无有效信号，请检查麦克风静音、接收器和设备通道路由。"
+            } else if snapshot.queuedSeconds > 2 {
+                signalStatus = "磁盘写入延迟增加，正在使用录音缓冲。"
             } else { signalStatus = nil }
         }
         if let failure = snapshot.failure {
@@ -246,21 +257,39 @@ final class AudioStudio: NSObject {
     }
 
     func togglePause() {
-        guard let writer, isRecording else { return }
+        guard let writer, isRecording, !isFinalizing else { return }
         isPaused.toggle()
         writer.setPaused(isPaused)
     }
 
     func stopRecording() {
-        guard isRecording else { return }
+        guard isRecording, !isFinalizing else { return }
+        isFinalizing = true
+        saveFailed = false
         if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
         configurationObserver = nil
         engine?.stop()
         engine?.inputNode.removeTap(onBus: 0)
-        if let snapshot = writer?.snapshot() { elapsed = snapshot.elapsed; waveforms = snapshot.waveforms; channelPeaks = snapshot.peaks }
-        writer?.close()
-        if let failure = writer?.snapshot().failure { errorMessage = "录音保存异常：\(failure)" }
-        let recordedURLs = writer?.outputURLs ?? []
+        let closingWriter = writer
+        finalizationTask = Task {
+            await Task.detached(priority: .userInitiated) { closingWriter?.close() }.value
+            finishRecording()
+        }
+    }
+
+    func waitForRecordingSave() async -> Bool {
+        await finalizationTask?.value
+        return !saveFailed
+    }
+
+    private func finishRecording() {
+        if let snapshot = writer?.snapshot() {
+            elapsed = snapshot.elapsed; waveforms = snapshot.waveforms; channelPeaks = snapshot.peaks
+            if let failure = snapshot.failure {
+                saveFailed = true
+                errorMessage = "录音异常中断，原文件已保留，重新打开工作文件夹时会尝试恢复：\(failure)"
+            }
+        }
         writer = nil
         engine = nil
         timer?.invalidate()
@@ -268,15 +297,10 @@ final class AudioStudio: NSObject {
         if let recordingActivity { ProcessInfo.processInfo.endActivity(recordingActivity) }
         recordingActivity = nil
         isRecording = false
+        isFinalizing = false
         isPaused = false
         signalStatus = nil
-        if let recordingMetadata {
-            do {
-                let data = try JSONEncoder().encode(recordingMetadata)
-                for url in recordedURLs { try data.write(to: url.appendingPathExtension("json"), options: .atomic) }
-            }
-            catch { errorMessage = "录音已保存，但通道名称保存失败：\(error.localizedDescription)" }
-        }
+        recordingHealth = nil
         recordingMetadata = nil
         reload()
         selectedID = recordingURL

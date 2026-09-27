@@ -43,10 +43,10 @@ struct AudioCaptureChecks {
                     buffer.floatChannelData![0][i] = (offset + i) / bin % 2 == 0 ? 0.1 : 0.01
                 }
                 writer.append(buffer)
-                _ = writer.snapshot()
+                _ = drainedSnapshot(writer)
                 offset += count
             }
-            let waveform = writer.snapshot().waveforms[0]
+            let waveform = drainedSnapshot(writer).waveforms[0]
             precondition(waveform.count == 800)
             for i in waveform.indices {
                 let expected: Float = (i + 25) % 2 == 0 ? 0.1 : 0.01
@@ -69,8 +69,8 @@ struct AudioCaptureChecks {
                 for channel in 0..<channelCount {
                     for frame in 0..<Int(buffer.frameLength) { buffer.floatChannelData![channel][frame] = values[channel] }
                 }
-                for _ in 0..<85 { writer.append(buffer); _ = writer.snapshot() }
-                let before = writer.snapshot()
+                for _ in 0..<85 { writer.append(buffer); _ = drainedSnapshot(writer) }
+                let before = drainedSnapshot(writer)
                 precondition(before.failure == nil)
                 precondition(before.waveforms.count == channelCount)
                 for channel in 0..<channelCount {
@@ -79,10 +79,10 @@ struct AudioCaptureChecks {
                 }
                 writer.setPaused(true)
                 writer.append(buffer)
-                precondition(writer.snapshot().elapsed == before.elapsed)
+                precondition(drainedSnapshot(writer).elapsed == before.elapsed)
                 writer.setPaused(false)
                 writer.append(buffer)
-                let after = writer.snapshot()
+                let after = drainedSnapshot(writer)
                 precondition(after.elapsed > before.elapsed)
                 writer.close()
                 let file = try AVAudioFile(forReading: url)
@@ -101,3 +101,5 @@ struct AudioCaptureChecks {
         }
     }
 }
+
+private func drainedSnapshot(_ writer: CaptureWriter) -> CaptureSnapshot { writer.flush(); return writer.snapshot() }

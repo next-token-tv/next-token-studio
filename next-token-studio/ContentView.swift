@@ -128,6 +128,10 @@ struct ContentView: View {
                         seek: { studio.seek(to: $0) }
                     )
                 }
+                if let health = studio.recordingHealth, !isPlayback, studio.isRecording {
+                    Text(health).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 24).padding(.bottom, 8)
+                }
                 if let status = studio.signalStatus, !isPlayback {
                     Label(status, systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
@@ -218,7 +222,7 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.blue).padding(.horizontal, 11).padding(.vertical, 7)
                         .background(.blue.opacity(0.08), in: Capsule())
                 } else {
-                    Label(studio.isRecording ? (studio.isPaused ? "已暂停" : "正在录音") : "准备录制", systemImage: studio.isRecording ? "record.circle" : "mic")
+                    Label(studio.isRecording ? (studio.isFinalizing ? "正在保存" : (studio.isPaused ? "已暂停" : "正在录音")) : "准备录制", systemImage: studio.isRecording ? "record.circle" : "mic")
                         .font(.callout).foregroundStyle(studio.isRecording ? .red : .secondary)
                 }
             }
@@ -251,7 +255,10 @@ struct ContentView: View {
                 Text("全部通道无损保存").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            if studio.isRecording {
+            if studio.isFinalizing {
+                ProgressView().controlSize(.small)
+                Text("正在保存录音…").font(.callout)
+            } else if studio.isRecording {
                 Button { studio.togglePause() } label: {
                     Label(studio.isPaused ? "继续录音" : "暂停", systemImage: studio.isPaused ? "play.fill" : "pause.fill")
                 }

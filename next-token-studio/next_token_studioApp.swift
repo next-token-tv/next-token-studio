@@ -20,10 +20,10 @@ struct NextTokenStudioApp: App {
                     .disabled(studio.isBusy || studio.workspace.root == nil)
                 Button(studio.isPaused ? "继续录音" : "暂停录音") { studio.togglePause() }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
-                    .disabled(!studio.isRecording)
+                    .disabled(!studio.isRecording || studio.isFinalizing)
                 Button("停止并保存") { studio.stopRecording() }
                     .keyboardShortcut(".", modifiers: [.command])
-                    .disabled(!studio.isRecording)
+                    .disabled(!studio.isRecording || studio.isFinalizing)
             }
         }
     }
@@ -34,6 +34,10 @@ final class StudioLifecycle: NSObject, NSApplicationDelegate {
     weak var studio: AudioStudio?
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let studio, studio.isRecording else { return .terminateNow }
+        if studio.isFinalizing {
+            Task { sender.reply(toApplicationShouldTerminate: await studio.waitForRecordingSave()) }
+            return .terminateLater
+        }
         let alert = NSAlert()
         alert.messageText = "正在录音"
         alert.informativeText = "退出前需要停止并保存当前录音。"
@@ -41,6 +45,7 @@ final class StudioLifecycle: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "停止保存并退出")
         guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
         studio.stopRecording()
-        return .terminateNow
+        Task { sender.reply(toApplicationShouldTerminate: await studio.waitForRecordingSave()) }
+        return .terminateLater
     }
 }

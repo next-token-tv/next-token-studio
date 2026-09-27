@@ -78,9 +78,9 @@ swiftc next-token-studio/WorkspaceData.swift next-token-studio/HostBinding.swift
 
 ## 录音恢复与保护
 
-分轨 WAV 由独立写入队列保存，采集回调只复制音频块；队列最多保留 8 块，写入跟不上时停止并提示。每 5 秒音频更新 WAV 文件头、同步各路文件并原子保存共同检查点。开始录制就写入通道及主播资料；正常停止保存最后的音频。
+分轨 WAV 由独立写入队列保存，采集回调只复制音频块；预分配约 10 秒音频缓冲（2,048 帧一块），缓冲耗尽时停止接收并标记异常中断。波形与写入状态通过独立快照读取，界面不等待磁盘队列；停止后后台排空缓冲并同步文件，保存完成前禁止开始新录音，退出等待保存结果。每 5 秒音频更新 WAV 文件头、同步各路文件并原子保存共同检查点。开始录制就写入通道及主播资料；正常停止保存最后的音频。
 
-重新打开工作文件夹时，后台检查未完成录音，按共同安全帧数创建 `.recovered.recording` 副本，重建 WAV 文件头并对齐所有轨道。异常原文件保留，重复启动不会重复恢复。没有检查点的短录音保留原文件并提示。该机制不承诺断电、磁盘损坏或系统故障下零丢失；尚未完成检查点的尾部音频可能无法恢复。
+重新打开工作文件夹时，后台检查未完成录音，按共同安全帧数创建 `.recovered.recording` 副本，重建 WAV 文件头并对齐所有轨道。异常原文件保留，重复启动不会重复恢复。单段恢复失败不阻断其他录音，未恢复条目会提示并在下次打开时重试。检查点损坏时只使用通过固定 WAV 格式校验的文件头，不猜测原始音频格式。恢复前检查副本所需空间，按 1 MB 块复制可恢复部分。没有可用检查点或有效文件头的短录音保留原文件并提示。该机制不承诺断电、磁盘损坏或系统故障下零丢失；尚未完成检查点的尾部音频可能无法恢复。
 
 录音期间阻止自动空闲睡眠，正常退出需要确认停止并保存。开始及检查点检查磁盘空间，低于 100 MB 时停止；输入断开、写入失败或写入队列超载也会停止并报告。
 
@@ -92,3 +92,19 @@ swiftc next-token-studio/RecordingAudioReader.swift next-token-studio/RecordingR
 ```
 
 该检查对生成测试音频的子进程发送 SIGKILL，并验证文件头损坏、尾部长度不一致时的共同检查点恢复、原文件保留及重复恢复幂等性。
+
+
+录音界面显示已写入时长、已同步时长、待写入缓冲时长和按当前采样率估算的磁盘剩余录制分钟数；剩余空间在开始及检查点更新，不是磁盘配额保证。缓冲超过 2 秒时提示写入延迟。每 5 秒音频创建检查点不代表任何故障下最多丢失 5 秒；队列积压、同步失败及硬件故障均可能扩大损失。
+
+故障注入与长文件检查：
+
+```sh
+swiftc next-token-studio/RecordingAudioReader.swift next-token-studio/RecordingRecovery.swift next-token-studio/AudioCapture.swift Tests/CaptureResilienceChecks.swift -o /tmp/next-token-resilience-checks
+/tmp/next-token-resilience-checks
+swiftc -O next-token-studio/RecordingAudioReader.swift next-token-studio/RecordingRecovery.swift next-token-studio/AudioCapture.swift Tests/LongRecordingChecks.swift -o /tmp/next-token-long-checks
+/tmp/next-token-long-checks
+```
+
+故障检查覆盖写入阻塞时快照响应、缓冲溢出、磁盘满写入错误、损坏检查点、恢复隔离和重试幂等。长文件检查加速写入 3 小时、5 路、48 kHz Float32 音频（10.368 GB），跨 11 段通过独立 AVAudioFile 读取每一路，逐样本验证内容与总帧数。测试需要至少约 15.4 GB 空闲磁盘，临时文件在正常完成时清理。该测试在每秒音频后等待写入完成，验证文件规模及分段正确性，不代替实时采集压力测试。
+
+生产验收仍需实际四／五路设备连续 3 小时录制至少三轮，覆盖并行 CPU／磁盘负载、设备拔插、采样率变化及暂停／停止／分段边界故障；核对各轨采样数、实际音频连续性、内存及缓冲积压。真实断电和真实耗尽磁盘尚未验证。正式录制应使用通过验收的固定 Release 构建。
