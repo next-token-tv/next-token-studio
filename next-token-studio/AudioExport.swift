@@ -77,7 +77,7 @@ nonisolated enum AudioExport {
         try manager.createDirectory(at: workspace, withIntermediateDirectories: false)
         defer { try? manager.removeItem(at: workspace) }
         let mixed = workspace.appendingPathComponent("mix.caf")
-        _ = try PlaybackRender.prepare(source: source, destination: mixed)
+        try ExportMix.render(source: source, destination: mixed)
         let encoded = workspace.appendingPathComponent("mix.m4a")
         try encodeAAC(source: mixed, destination: encoded)
         try Task.checkCancellation()

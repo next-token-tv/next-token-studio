@@ -9,7 +9,7 @@
 - 每路输入直接录制为独立的单声道 WAV（32-bit float），保留设备原始采样率及共同时间起点，通道名称保存在同名 JSON 旁文件中；兼容已有 CAF 和 M4A 录音。回放直接分块读取原始文件，实时混合全部通道，不生成混音文件，总峰值过高时统一衰减以防削波，原始录音保持不变。
 - 播放器支持播放、暂停、回到开头、进度拖动及点击任意轨道波形定位；空格键控制播放与暂停。
 - 导出分轨 WAV：每个输入通道生成一个单声道 32-bit float WAV，保留原始采样率、完整时长与静音段；文件名为 `host-ch01.wav` 等，并附带 `channels.json` 通道来源表，适用于 NextToken 的分轨转写与后期流程。
-- 导出混音 M4A：全部通道按回放规则混合，输出 AAC-LC、48 kHz、双声道，目标码率 320 kbps。此导出不包含片头片尾编辑或响度母带处理。导出在后台执行，可取消；默认保存到工作文件夹的 `exports/`，完成后可在 Finder 中定位。
+- 导出混音 M4A：全部通道混合，经带门限的 RMS 电平调整及前瞻限幅，输出 AAC-LC、48 kHz、双声道，目标码率 320 kbps。此导出不包含片头片尾编辑。导出在后台执行，可取消；默认保存到工作文件夹的 `exports/`，完成后可在 Finder 中定位。
 - 支持工具栏删除、右键「移到废纸篓」和 ⌘⌫；所有入口均先显示录音名称并要求确认，默认按钮为「取消」。音频与通道信息一起移到废纸篓，删除正在回放的录音会先停止播放；录音期间不可删除。
 - 首次录音请求麦克风授权。工作文件夹为 `~/Documents/Next Token Studio`，首次通过系统文件夹选择器授权，后续以安全作用域书签恢复访问。旧沙盒中的录音及通道资料迁移至 `recordings/`，同名冲突不会覆盖。
 
@@ -68,7 +68,7 @@ swiftc next-token-studio/RecordingAudioReader.swift next-token-studio/PlaybackRe
 /tmp/next-token-playback-checks
 swiftc next-token-studio/RecordingTrash.swift Tests/RecordingTrashChecks.swift -o /tmp/next-token-trash-checks
 /tmp/next-token-trash-checks
-swiftc next-token-studio/RecordingAudioReader.swift next-token-studio/PlaybackRender.swift next-token-studio/AudioExport.swift Tests/AudioExportChecks.swift -o /tmp/next-token-export-checks
+swiftc next-token-studio/RecordingAudioReader.swift next-token-studio/PlaybackRender.swift next-token-studio/ExportMix.swift next-token-studio/AudioExport.swift Tests/AudioExportChecks.swift -o /tmp/next-token-export-checks
 /tmp/next-token-export-checks
 swiftc next-token-studio/WorkspaceData.swift Tests/WorkspaceChecks.swift -o /tmp/next-token-workspace-checks
 /tmp/next-token-workspace-checks next-token-studio/WorkspaceSeed
@@ -108,3 +108,15 @@ swiftc -O next-token-studio/RecordingAudioReader.swift next-token-studio/Recordi
 故障检查覆盖写入阻塞时快照响应、缓冲溢出、磁盘满写入错误、损坏检查点、恢复隔离和重试幂等。长文件检查加速写入 3 小时、5 路、48 kHz Float32 音频（10.368 GB），跨 11 段通过独立 AVAudioFile 读取每一路，逐样本验证内容与总帧数。测试需要至少约 15.4 GB 空闲磁盘，临时文件在正常完成时清理。该测试在每秒音频后等待写入完成，验证文件规模及分段正确性，不代替实时采集压力测试。
 
 生产验收仍需实际四／五路设备连续 3 小时录制至少三轮，覆盖并行 CPU／磁盘负载、设备拔插、采样率变化及暂停／停止／分段边界故障；核对各轨采样数、实际音频连续性、内存及缓冲积压。真实断电和真实耗尽磁盘尚未验证。正式录制应使用通过验收的固定 Release 构建。
+
+
+### M4A 导出音量
+
+M4A 导出将全部音轨相加，使用 400 ms 窗口进行带门限的 RMS 分析，排除低于 −60 dBFS 及低于有效平均能量 20 dB 的窗口，目标为单声道有效 RMS −19 dBFS，最大提升 12 dB。此值不是 LUFS。混音经过 5 ms 前瞻、100 ms 释放的峰值限幅，采样峰值上限 −2 dBFS，为 AAC 编码留出余量；它不承诺任意素材的编码后真峰值上限。左右声道复制同一混音，48 kHz、320 kbps AAC。
+
+该处理只应用于显式 M4A 导出。原始 WAV、分轨导出、波形缓存和应用内回放不变，回放与新版 M4A 的响度可能不同。限幅不能修复录制时已削波的信号，也不包含降噪、去串音或逐位主播的自动音量均衡。
+
+```sh
+swiftc -O next-token-studio/RecordingAudioReader.swift next-token-studio/ExportMix.swift Tests/ExportMixChecks.swift -o /tmp/next-token-mix-checks
+/tmp/next-token-mix-checks
+```
