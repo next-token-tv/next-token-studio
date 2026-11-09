@@ -36,6 +36,19 @@ import Darwin
   let unchanged = try Data(contentsOf: original.appendingPathComponent("track-01.wav")); precondition(bytes == unchanged)
   let reader = try RecordingAudioReader(forReading: root.appendingPathComponent("test.recovered.recording"))
   precondition(reader.length == 48000)
+  let blocked = root.appendingPathComponent(".recovery-" + UUID().uuidString)
+  let removable = root.appendingPathComponent(".recovery-" + UUID().uuidString)
+  for url in [blocked, removable] {
+   try fm.createDirectory(at: url, withIntermediateDirectories: false)
+   try JSONSerialization.data(withJSONObject: ["version": 1, "directory": url.lastPathComponent]).write(to: url.appendingPathComponent(".studio-recovery-owner.json"))
+  }
+  let issues = try RecordingRecovery.cleanStaging(in: root) { url in
+   if url.lastPathComponent == blocked.lastPathComponent { throw CocoaError(.fileWriteNoPermission) }
+   try fm.removeItem(at: url)
+  }
+  precondition(issues.count == 1 && fm.fileExists(atPath: blocked.path) && !fm.fileExists(atPath: removable.path))
+  precondition(fm.fileExists(atPath: unknown.path))
+  print("PASS: failed cleanup isolated; other owned staging removed; unknown directory retained")
   print("PASS: repeated SIGKILL during recovery; bounded staging; original and unowned directory preserved")
  }
 }

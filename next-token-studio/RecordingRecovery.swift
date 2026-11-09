@@ -68,8 +68,8 @@ nonisolated enum RecordingRecovery {
             return Report(issues: ["Another recovery is already running."])
         }
         defer { flock(fd, LOCK_UN) }
-        try cleanStaging(in: root)
         var report = Report()
+        report.issues = try cleanStaging(in: root)
         for folder in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             .sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) where folder.pathExtension == "recording" {
             let status = state(in: folder)?.status
@@ -85,20 +85,24 @@ nonisolated enum RecordingRecovery {
         let directory: String
     }
 
-    private static func cleanStaging(in root: URL) throws {
+    static func cleanStaging(in root: URL, remove: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }) throws -> [String] {
+        var issues: [String] = []
         let manager = FileManager.default
         for url in try manager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isSymbolicLinkKey, .isDirectoryKey]) {
             guard url.lastPathComponent.hasPrefix(".recovery-"),
                   UUID(uuidString: String(url.lastPathComponent.dropFirst(10))) != nil else { continue }
-            let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
-            guard values.isDirectory == true, values.isSymbolicLink != true else { continue }
-            let marker = url.appendingPathComponent(".studio-recovery-owner.json")
-            guard (try? marker.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
-                  let data = try? Data(contentsOf: marker),
-                  let owner = try? JSONDecoder().decode(StagingOwner.self, from: data),
-                  owner.version == 1, owner.directory == url.lastPathComponent else { continue }
-            try manager.removeItem(at: url)
+            do {
+                let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+                guard values.isDirectory == true, values.isSymbolicLink != true else { continue }
+                let marker = url.appendingPathComponent(".studio-recovery-owner.json")
+                guard (try? marker.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+                      let data = try? Data(contentsOf: marker),
+                      let owner = try? JSONDecoder().decode(StagingOwner.self, from: data),
+                      owner.version == 1, owner.directory == url.lastPathComponent else { continue }
+                try remove(url)
+            } catch { issues.append("Temporary recovery cleanup failed (\(url.lastPathComponent)): \(error.localizedDescription)") }
         }
+        return issues
     }
 
     private static func recoverFolder(_ folder: URL, root: URL, afterCopy: (() -> Void)?) throws -> Bool {
