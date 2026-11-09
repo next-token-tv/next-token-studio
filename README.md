@@ -4,7 +4,7 @@
 
 A native macOS multitrack recorder built with SwiftUI and AVFoundation. Requires macOS 14 or later; building requires Xcode 26 or later with Icon Composer support. The application UI is currently in Chinese.
 
-**Preview software:** automated tests are not a guarantee of uninterrupted recording. Real four/five-input, three-hour soak tests under concurrent CPU/disk load remain a release acceptance requirement. Keep an independent backup for irreplaceable recordings.
+Used to record multiple Next Token podcast episodes, each approximately two hours long. These real recording sessions complement automated checks of multitrack audio, export and recovery.
 
 ## Recording and playback
 
