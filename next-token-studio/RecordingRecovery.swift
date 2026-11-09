@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import AVFoundation
 
 // Fixed-layout IEEE Float WAV: RIFF, fmt, fact, data. All integers are little endian.
@@ -59,19 +60,48 @@ nonisolated enum RecordingRecovery {
     }
     static func recover(in root: URL) throws -> Int { try recoverReport(in: root).recovered }
 
-    static func recoverReport(in root: URL) throws -> Report {
+    static func recoverReport(in root: URL, afterCopy: (() -> Void)? = nil) throws -> Report {
+        let fd = open(root.appendingPathComponent(".recovery.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { close(fd) }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            return Report(issues: ["Another recovery is already running."])
+        }
+        defer { flock(fd, LOCK_UN) }
+        try cleanStaging(in: root)
         var report = Report()
         for folder in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             .sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) where folder.pathExtension == "recording" {
             let status = state(in: folder)?.status
             if status == "complete" || status == "recovered" { continue }
-            do { if try recoverFolder(folder, root: root) { report.recovered += 1 } }
+            do { if try recoverFolder(folder, root: root, afterCopy: afterCopy) { report.recovered += 1 } }
             catch { report.issues.append("\(folder.lastPathComponent)：\(error.localizedDescription)") }
         }
         return report
     }
 
-    private static func recoverFolder(_ folder: URL, root: URL) throws -> Bool {
+    private struct StagingOwner: Codable {
+        let version: Int
+        let directory: String
+    }
+
+    private static func cleanStaging(in root: URL) throws {
+        let manager = FileManager.default
+        for url in try manager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isSymbolicLinkKey, .isDirectoryKey]) {
+            guard url.lastPathComponent.hasPrefix(".recovery-"),
+                  UUID(uuidString: String(url.lastPathComponent.dropFirst(10))) != nil else { continue }
+            let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else { continue }
+            let marker = url.appendingPathComponent(".studio-recovery-owner.json")
+            guard (try? marker.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+                  let data = try? Data(contentsOf: marker),
+                  let owner = try? JSONDecoder().decode(StagingOwner.self, from: data),
+                  owner.version == 1, owner.directory == url.lastPathComponent else { continue }
+            try manager.removeItem(at: url)
+        }
+    }
+
+    private static func recoverFolder(_ folder: URL, root: URL, afterCopy: (() -> Void)?) throws -> Bool {
         let manager = FileManager.default
         let files = try RecordingAudioReader.sourceFiles(folder)
         var checkpoint = state(in: folder)
@@ -116,6 +146,11 @@ nonisolated enum RecordingRecovery {
             let staging = root.appendingPathComponent(".recovery-" + UUID().uuidString)
             try manager.createDirectory(at: staging, withIntermediateDirectories: false)
             defer { try? manager.removeItem(at: staging) }
+            let marker = staging.appendingPathComponent(".studio-recovery-owner.json")
+            try JSONEncoder().encode(StagingOwner(version: 1, directory: staging.lastPathComponent)).write(to: marker, options: .atomic)
+            let markerHandle = try FileHandle(forWritingTo: marker)
+            try markerHandle.synchronize()
+            try markerHandle.close()
             for source in files {
                 let target = staging.appendingPathComponent(source.lastPathComponent)
                 guard manager.createFile(atPath: target.path, contents: DurableWAV.header(rate: checkpoint.sampleRate, frames: frames)) else { throw CocoaError(.fileWriteUnknown) }
@@ -131,6 +166,7 @@ nonisolated enum RecordingRecovery {
                     remaining -= Int64(data.count)
                 }
                 try output.synchronize()
+                afterCopy?()
             }
             try manager.copyItem(at: folder.appendingPathComponent("tracks.json"), to: staging.appendingPathComponent("tracks.json"))
             try save(State(status: "complete", sampleRate: checkpoint.sampleRate, safeFrames: frames), in: staging)
