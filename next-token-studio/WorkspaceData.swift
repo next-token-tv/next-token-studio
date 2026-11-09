@@ -30,8 +30,11 @@ nonisolated enum WorkspaceData {
             }
             try fm.copyItem(at: source.appendingPathComponent("hosts.json"), to: catalog)
         }
-        let readme = root.appendingPathComponent("README.md")
-        if !fm.fileExists(atPath: readme.path) { try fm.copyItem(at: seed.appendingPathComponent("README.md"), to: readme) }
+        for name in ["README.md", "README.zh-Hans.md"] {
+            let readme = root.appendingPathComponent(name)
+            let source = seed.appendingPathComponent(name)
+            if !fm.fileExists(atPath: readme.path), fm.fileExists(atPath: source.path) { try fm.copyItem(at: source, to: readme) }
+        }
     }
 
     static func readHosts(root: URL) throws -> [StudioHost] {
