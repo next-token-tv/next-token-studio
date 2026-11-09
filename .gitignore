@@ -3,3 +3,16 @@ build/
 DerivedData/
 xcuserdata/
 *.xcuserstate
+
+# Local credentials and recording material
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+*.mobileprovision
+*.provisionprofile
+*.recording/
+*.wav
+*.caf
+*.m4a
